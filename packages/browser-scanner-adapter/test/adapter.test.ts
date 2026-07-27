@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   createChunks,
   dedupeFindings,
+  explainFinding,
   isScopedExceptionMatch,
   makeMessage,
   progressPercentage,
@@ -127,4 +128,39 @@ test("progress percentage uses actual work units", () => {
     workerRestartCount: 0,
     currentScanMode: "standard"
   })).toBe(50);
+});
+
+test("explains suspicious hidden source content in user-facing security terms", () => {
+  const explanation = explainFinding({
+    ruleId: "suspicious-comment-or-meta",
+    category: "html-comment",
+    severity: "medium",
+    confidence: 0.72,
+    visibility: "comment",
+    visibleToUser: false,
+    likelyInExtractedText: false,
+    signals: ["suspicious-comment", "instruction-override"],
+    hiddenReasons: { comment: "HTML comment" }
+  });
+  expect(explanation.title).toContain("Instruction-like text");
+  expect(explanation.concern).toContain("users usually do not inspect");
+  expect(explanation.possibleImpact).toContain("agent");
+  expect(explanation.recommendedAction).toContain("Inspect");
+  expect(explanation.explanation).not.toContain("Rust/WASM scanner matched");
+});
+
+test("labels visible documentation-like matches as review instead of confirmed malicious", () => {
+  const explanation = explainFinding({
+    ruleId: "instruction-override",
+    category: "instruction-pattern",
+    severity: "medium",
+    confidence: 0.62,
+    visibility: "visible",
+    visibleToUser: true,
+    likelyInExtractedText: true,
+    signals: ["instruction-override"],
+    hiddenReasons: {}
+  });
+  expect(explanation.verdict).toBe("needs-review");
+  expect(explanation.falsePositiveGuidance).toContain("documentation");
 });

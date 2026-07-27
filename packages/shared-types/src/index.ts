@@ -147,12 +147,19 @@ export interface ScanContext {
 
 export interface Finding {
   id: string;
+  title?: string;
   ruleId: string;
   category: FindingCategory;
   severity: Severity;
   confidence: number;
+  verdict?: "confirmed-risk" | "likely-risk" | "needs-review" | "low-confidence-signal";
   selector: string;
   evidence: string;
+  concern?: string;
+  possibleImpact?: string;
+  whyItMatters?: string;
+  confidenceReason?: string;
+  falsePositiveGuidance?: string;
   explanation: string;
   recommendedAction: string;
   visibleToUser: boolean;

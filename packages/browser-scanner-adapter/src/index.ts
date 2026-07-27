@@ -23,6 +23,7 @@ import {
 import scanWorkerUrl from "./scan-worker.ts?worker&url";
 
 export * from "./protocol";
+export { explainFinding } from "./finding-explanations";
 
 export const SCAN_LIMITS: Record<ScanMode, ScanLimitsConfig> = {
   quick: limits(2, 64, 512, 1_500, 1, 250, 12_000, 4_000, 64, 20_000),

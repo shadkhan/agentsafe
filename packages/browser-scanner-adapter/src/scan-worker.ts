@@ -8,6 +8,7 @@ import {
   type ScanWorkerMessage,
   type TextChunk
 } from "./protocol";
+import { explainFinding } from "./finding-explanations";
 
 let initialized = false;
 let abortedScanId: string | undefined;
@@ -93,18 +94,38 @@ function mapFinding(chunk: TextChunk, rustFinding: {
   const hiddenSignals = Object.keys(segment?.hiddenReasons ?? {}).map(cssSignal).filter(Boolean) as RuleSignal[];
   const signals = [...hiddenSignals, ...rustFinding.signals.filter(isRuleSignal)];
   const category = chooseCategory(rustFinding.category, segment?.visibility ?? chunk.visibilityCategory, signals);
-  return {
-    id: stableId(segment?.selector ?? chunk.chunkId, rustFinding.rule_id, rustFinding.evidence.redacted_text, charStart),
+  const visibleToUser = segment?.visibleToUser ?? chunk.visibilityCategory === "visible";
+  const likelyInExtractedText = segment?.likelyInExtractedText ?? true;
+  const enrichment = explainFinding({
     ruleId: rustFinding.rule_id,
     category,
     severity: rustFinding.severity as Severity,
     confidence: rustFinding.confidence,
+    visibility: segment?.visibility ?? chunk.visibilityCategory,
+    visibleToUser,
+    likelyInExtractedText,
+    signals: signals.length ? signals : [fallbackSignal(rustFinding.rule_id)],
+    hiddenReasons: segment?.hiddenReasons ?? {}
+  });
+  return {
+    id: stableId(segment?.selector ?? chunk.chunkId, rustFinding.rule_id, rustFinding.evidence.redacted_text, charStart),
+    title: enrichment.title,
+    ruleId: rustFinding.rule_id,
+    category,
+    severity: rustFinding.severity as Severity,
+    confidence: rustFinding.confidence,
+    verdict: enrichment.verdict,
     selector: segment?.selector ?? chunk.chunkId,
     evidence: excerpt(rustFinding.evidence.redacted_text),
-    explanation: `Rust/WASM scanner matched ${rustFinding.rule_id} in ${segment?.visibility ?? chunk.visibilityCategory} page content.`,
-    recommendedAction: recommendedAction(category),
-    visibleToUser: segment?.visibleToUser ?? chunk.visibilityCategory === "visible",
-    likelyInExtractedText: segment?.likelyInExtractedText ?? true,
+    concern: enrichment.concern,
+    possibleImpact: enrichment.possibleImpact,
+    whyItMatters: enrichment.whyItMatters,
+    confidenceReason: enrichment.confidenceReason,
+    falsePositiveGuidance: enrichment.falsePositiveGuidance,
+    explanation: enrichment.explanation,
+    recommendedAction: enrichment.recommendedAction,
+    visibleToUser,
+    likelyInExtractedText,
     signals: signals.length ? signals : [fallbackSignal(rustFinding.rule_id)],
     cssProperties: Object.keys(segment?.hiddenReasons ?? {}).length ? segment?.hiddenReasons : undefined
   };
@@ -119,13 +140,6 @@ function chooseCategory(rustCategory: string, visibility: string, signals: RuleS
   if (visibility === "comment") return "html-comment";
   if (visibility === "hidden") return "hidden-css";
   return "instruction-pattern";
-}
-
-function recommendedAction(category: FindingCategory) {
-  if (category === "hidden-css" || category === "accessibility") return "Review the element and remove hidden text from sanitized exports unless it is clearly legitimate.";
-  if (category === "unicode-security") return "Remove or normalize suspicious Unicode before copying content into an AI system.";
-  if (category === "encoded-content") return "Decode and inspect the content, then exclude it from AI-facing exports unless trusted.";
-  return "Treat as advisory, verify intent in context, and avoid copying the suspicious instruction into an AI agent.";
 }
 
 function cssSignal(property: string): RuleSignal | undefined {

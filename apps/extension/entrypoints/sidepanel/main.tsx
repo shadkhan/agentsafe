@@ -453,18 +453,32 @@ function FindingCard({ finding }: { finding: Finding }) {
   return (
     <article className={`finding ${finding.severity}`}>
       <div className="finding-head">
-        <strong>{finding.ruleId}</strong>
-        <span>{finding.severity} - {Math.round(finding.confidence * 100)}%</span>
+        <strong>{finding.title ?? finding.ruleId}</strong>
+        <span>{finding.verdict ? verdictText(finding.verdict) : finding.severity} - {Math.round(finding.confidence * 100)}%</span>
       </div>
+      <p><b>Rule:</b> {finding.ruleId}</p>
       <p><b>Selector:</b> {finding.selector}</p>
       <p><b>Evidence:</b> {finding.evidence}</p>
       {finding.decodedEvidence && <p><b>Decoded:</b> {finding.decodedEvidence}</p>}
-      <p><b>Why:</b> {finding.explanation}</p>
-      <p><b>Action:</b> {finding.recommendedAction}</p>
+      <p><b>Security Concern:</b> {finding.concern ?? finding.explanation}</p>
+      {finding.possibleImpact && <p><b>What Could Happen:</b> {finding.possibleImpact}</p>}
+      <p><b>Why AgentSafe Flagged It:</b> {finding.whyItMatters ?? finding.explanation}</p>
+      {finding.confidenceReason && <p><b>Confidence:</b> {finding.confidenceReason}</p>}
+      {finding.falsePositiveGuidance && <p><b>May Be Benign If:</b> {finding.falsePositiveGuidance}</p>}
+      <p><b>Recommended Action:</b> {finding.recommendedAction}</p>
       <p><b>Visible:</b> {finding.visibleToUser ? "yes" : "no"} - <b>Likely extracted:</b> {finding.likelyInExtractedText ? "yes" : "no"}</p>
       {finding.cssProperties && <pre>{JSON.stringify(finding.cssProperties, null, 2)}</pre>}
     </article>
   );
+}
+
+function verdictText(verdict: NonNullable<Finding["verdict"]>) {
+  return {
+    "confirmed-risk": "confirmed risk",
+    "likely-risk": "likely risk",
+    "needs-review": "needs review",
+    "low-confidence-signal": "low-confidence signal"
+  }[verdict];
 }
 
 function Sanitized({ report }: { report: SanitizedExport | null }) {
