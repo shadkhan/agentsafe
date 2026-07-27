@@ -1,0 +1,17 @@
+node_modules/
+target/
+test-results/
+
+.env
+.env.*
+!.env.example
+
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+apps/extension/.output/
+apps/extension/.wxt/
+
+*.log

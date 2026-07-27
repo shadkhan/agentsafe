@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "target": "ES2022",
+    "strict": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "files": [],
+  "include": ["e2e/**/*.ts", "playwright.config.ts", "vitest.config.ts"],
+  "references": [
+    { "path": "./packages/shared-types/tsconfig.json" },
+    { "path": "./packages/risk-engine/tsconfig.json" },
+    { "path": "./packages/scanner/tsconfig.json" },
+    { "path": "./packages/dom-sanitizer/tsconfig.json" },
+    { "path": "./packages/markdown-exporter/tsconfig.json" },
+    { "path": "./apps/extension/tsconfig.json" }
+  ]
+}

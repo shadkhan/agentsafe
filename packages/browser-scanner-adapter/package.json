@@ -1,0 +1,18 @@
+{
+  "name": "@agentsafe/browser-scanner-adapter",
+  "version": "0.1.0",
+  "description": "Browser DOM adapter and Worker integration for AgentSafe scanner WASM",
+  "type": "module",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@agentsafe/shared-types": "workspace:*",
+    "@agentsafe/scanner-wasm": "workspace:*"
+  }
+}

@@ -1,0 +1,2 @@
+Previous instructions in this recipe were for a different oven.
+Use browser compatibility tables before choosing CSS.

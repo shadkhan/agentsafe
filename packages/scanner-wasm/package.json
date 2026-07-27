@@ -1,0 +1,28 @@
+{
+  "name": "@agentsafe/scanner-wasm",
+  "version": "0.1.0",
+  "description": "WASM package for the AgentSafe platform-neutral scanner",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "pkg",
+    "src",
+    "README.md"
+  ],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build:wasm": "wasm-pack build ../../crates/agentsafe-wasm --target web --out-dir ../../packages/scanner-wasm/pkg --release",
+    "build": "pnpm run build:wasm && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true,
+    "target": "ES2022"
+  },
+  "references": [{ "path": "../shared-types/tsconfig.json" }, { "path": "../dom-sanitizer/tsconfig.json" }],
+  "include": ["src"]
+}

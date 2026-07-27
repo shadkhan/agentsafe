@@ -1,0 +1,16 @@
+{
+  "name": "@agentsafe/markdown-exporter",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@agentsafe/dom-sanitizer": "workspace:*",
+    "@agentsafe/shared-types": "workspace:*",
+    "@mozilla/readability": "^0.5.0",
+    "turndown": "^7.2.0"
+  }
+}

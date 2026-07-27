@@ -1,0 +1,15 @@
+{
+  "extends": "./.wxt/tsconfig.json",
+  "compilerOptions": {
+    "strict": true,
+    "jsx": "react-jsx",
+    "noEmit": true
+  },
+  "references": [
+    { "path": "../../packages/shared-types/tsconfig.json" },
+    { "path": "../../packages/risk-engine/tsconfig.json" },
+    { "path": "../../packages/scanner/tsconfig.json" },
+    { "path": "../../packages/dom-sanitizer/tsconfig.json" },
+    { "path": "../../packages/markdown-exporter/tsconfig.json" }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "name": "@agentsafe/dom-sanitizer",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@agentsafe/shared-types": "workspace:*",
+    "dompurify": "^3.1.6"
+  },
+  "devDependencies": {
+    "jsdom": "^24.1.1"
+  }
+}

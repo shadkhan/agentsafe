@@ -1,0 +1,12 @@
+[workspace]
+members = [
+  "crates/agentsafe-core",
+  "crates/agentsafe-wasm"
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/agentsafe/agentsafe"
+version = "0.1.0"
