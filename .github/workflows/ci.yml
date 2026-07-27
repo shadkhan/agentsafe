@@ -28,6 +28,7 @@ jobs:
       - run: cargo test --workspace
       - run: pnpm typecheck
       - run: pnpm test
+      - run: pnpm exec playwright install chromium
       - run: pnpm e2e
       - run: pnpm --filter @agentsafe/extension build
       - run: pnpm verify:clean
