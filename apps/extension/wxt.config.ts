@@ -11,6 +11,8 @@ export default defineConfig({
         "@agentsafe/shared-types": "../../packages/shared-types/src/index.ts",
         "@agentsafe/risk-engine": "../../packages/risk-engine/src/index.ts",
         "@agentsafe/scanner": "../../packages/scanner/src/index.ts",
+        "@agentsafe/scanner-wasm": "../../packages/scanner-wasm/src/index.ts",
+        "@agentsafe/webmcp-security": "../../packages/webmcp-security/src/index.ts",
         "@agentsafe/dom-sanitizer": "../../packages/dom-sanitizer/src/index.ts",
         "@agentsafe/markdown-exporter": "../../packages/markdown-exporter/src/index.ts"
       }

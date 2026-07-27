@@ -8,4 +8,6 @@ Long description:
 
 AgentSafe scans the current webpage for content that may manipulate AI agents, browser assistants, web-to-LLM pipelines, or people copying page content into an LLM. It highlights suspicious hidden text, Unicode controls, instruction-like phrases, suspicious metadata, comments, delimiter blocks, and encoded instructions.
 
+AgentSafe also includes an Experimental WebMCP Security Scanner for supported Chrome testing environments. It passively reviews WebMCP tool metadata exposed by the active page and does not execute, intercept, or block WebMCP tools.
+
 AgentSafe is local-only. It uses no external servers, collects no data, has no telemetry, and is open source. Detection is advisory and not a guarantee of safety. Every finding includes evidence, confidence, severity, and an explanation.

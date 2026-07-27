@@ -10,7 +10,7 @@
     "dev": "pnpm --filter @agentsafe/extension dev",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "pnpm --filter @agentsafe/shared-types --filter @agentsafe/risk-engine --filter @agentsafe/scanner --filter @agentsafe/dom-sanitizer --filter @agentsafe/markdown-exporter build && pnpm --filter @agentsafe/extension typecheck",
+    "typecheck": "pnpm --filter @agentsafe/shared-types --filter @agentsafe/risk-engine --filter @agentsafe/scanner --filter @agentsafe/scanner-wasm --filter @agentsafe/webmcp-security --filter @agentsafe/dom-sanitizer --filter @agentsafe/markdown-exporter build && pnpm --filter @agentsafe/extension typecheck",
     "e2e": "playwright test"
   },
   "workspaces": [

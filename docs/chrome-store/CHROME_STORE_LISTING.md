@@ -11,3 +11,4 @@ Required statements:
 - No data collection.
 - Open-source implementation.
 - Detection is advisory and not a guarantee of safety.
+- Experimental WebMCP review is passive, browser-support-dependent, and does not execute, intercept, or block tools.

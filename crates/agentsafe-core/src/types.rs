@@ -36,18 +36,13 @@ pub enum Severity {
     Critical,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum Sensitivity {
     Low,
+    #[default]
     Medium,
     High,
-}
-
-impl Default for Sensitivity {
-    fn default() -> Self {
-        Self::Medium
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

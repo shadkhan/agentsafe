@@ -1,12 +1,13 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { AlertTriangle, ChevronLeft, ChevronRight, Clipboard, Download, Eye, RotateCcw, ScanLine, Trash2 } from "lucide-react";
+import { AlertTriangle, ChevronLeft, ChevronRight, Clipboard, Download, Eye, RotateCcw, ScanLine, ShieldCheck, Trash2 } from "lucide-react";
 import { defaultSettings, type Finding, type SanitizedExport, type ScanResult, type ScannerSettings, type Severity } from "@agentsafe/shared-types";
 import { scanDocument } from "@agentsafe/scanner";
 import { createSanitizedExport } from "@agentsafe/markdown-exporter";
+import { analyzeWebMcpTools, exportWebMcpReportJson, exportWebMcpReportMarkdown, type WebMcpSecurityReport } from "@agentsafe/webmcp-security";
 import "./style.css";
 
-type Tab = "summary" | "findings" | "hidden" | "sanitized" | "export" | "settings";
+type Tab = "summary" | "findings" | "hidden" | "webmcp" | "sanitized" | "export" | "settings";
 
 interface PageSnapshot {
   html: string;
@@ -17,6 +18,7 @@ interface PageSnapshot {
 interface CachedScan {
   scan: ScanResult;
   report: SanitizedExport;
+  webMcpReport?: WebMcpSecurityReport;
   scannedAt: string;
   source: "manual" | "auto";
 }
@@ -25,6 +27,7 @@ const tabs: Array<[Tab, string]> = [
   ["summary", "Summary"],
   ["findings", "Findings"],
   ["hidden", "Hidden Content"],
+  ["webmcp", "WebMCP"],
   ["sanitized", "Sanitized Content"],
   ["export", "Export"],
   ["settings", "Settings"]
@@ -34,6 +37,7 @@ function App() {
   const [tab, setTab] = useState<Tab>("summary");
   const [scan, setScan] = useState<ScanResult | null>(null);
   const [report, setReport] = useState<SanitizedExport | null>(null);
+  const [webMcpReport, setWebMcpReport] = useState<WebMcpSecurityReport | null>(null);
   const [settings, setSettings] = useState<ScannerSettings>(defaultSettings);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [activeFinding, setActiveFinding] = useState(0);
@@ -99,12 +103,25 @@ function App() {
       const nextReport = createSanitizedExport(parsed, nextScan.findings);
       nextReport.sourceUrl = pageSnapshot.url;
       nextReport.pageTitle = pageSnapshot.title;
+      const webMcpSnapshot = settings.experimentalWebMcpSecurity
+        ? await executeWithPageAccess(tabInfo, collectWebMcpForAgentSafe, undefined, { requestPermission: source === "manual" })
+        : [];
+      const webMcpPage = webMcpSnapshot[0]?.result as ReturnType<typeof collectWebMcpForAgentSafe> | undefined;
+      const nextWebMcpReport = settings.experimentalWebMcpSecurity && webMcpPage
+        ? await analyzeWebMcpTools({
+            pageUrl: webMcpPage.pageUrl,
+            browserSupport: webMcpPage.support,
+            tools: webMcpPage.tools,
+            agentSafeVersion: chrome.runtime.getManifest().version
+          })
+        : null;
       setScan(nextScan);
       setReport(nextReport);
+      setWebMcpReport(nextWebMcpReport);
       setActiveFinding(0);
-      await saveCachedResult(tabInfo.id!, nextScan, nextReport, source);
+      await saveCachedResult(tabInfo.id!, nextScan, nextReport, source, nextWebMcpReport ?? undefined);
       await updateBadge(tabInfo.id!, nextScan, settings.badgeEnabled);
-      setStatus(`${source === "auto" ? "Auto-scan" : "Scan"} complete: ${nextScan.findings.length} findings.`);
+      setStatus(`${source === "auto" ? "Auto-scan" : "Scan"} complete: ${nextScan.findings.length} page findings, ${nextWebMcpReport?.tools.length ?? 0} WebMCP tools.`);
     } catch (error) {
       if (source === "manual") setStatus(`Scan failed. ${formatScanError(error)}`);
     }
@@ -134,6 +151,7 @@ function App() {
     if (!cached) return;
     setScan(cached.scan);
     setReport(cached.report);
+    setWebMcpReport(cached.webMcpReport ?? null);
     setActiveFinding(0);
     setStatus(`Loaded ${cached.source} scan from ${new Date(cached.scannedAt).toLocaleTimeString()}: ${cached.scan.findings.length} findings.`);
   }
@@ -185,6 +203,7 @@ function App() {
       {tab === "summary" && <Summary scan={scan} />}
       {tab === "findings" && <Findings findings={findings} selected={selected} activeFinding={activeFinding} next={next} highlight={highlight} reveal={reveal} clear={clear} />}
       {tab === "hidden" && <FindingList title="Hidden Content" findings={hiddenFindings} onHighlight={highlight} onReveal={reveal} />}
+      {tab === "webmcp" && <WebMcpSecurity report={webMcpReport} enabled={settings.experimentalWebMcpSecurity} />}
       {tab === "sanitized" && <Sanitized report={report} />}
       {tab === "export" && <Export report={report} scan={scan} />}
       {tab === "settings" && <Settings settings={settings} setSettings={setSettings} />}
@@ -312,6 +331,65 @@ function Export({ report, scan }: { report: SanitizedExport | null; scan: ScanRe
   );
 }
 
+function WebMcpSecurity({ report, enabled }: { report: WebMcpSecurityReport | null; enabled: boolean }) {
+  if (!enabled) return <Empty text="Experimental WebMCP Security is disabled in Settings." />;
+  if (!report) return <Empty text="Scan first to inspect WebMCP tool metadata. AgentSafe will not execute tools." />;
+  return (
+    <section>
+      <div className="score webmcp-score">
+        <ShieldCheck size={22} />
+        <span>{report.tools.length}</span>
+        <small>Experimental WebMCP tools discovered</small>
+      </div>
+      <dl>
+        <dt>Browser support</dt><dd>{report.browserSupport.status} · {report.browserSupport.message}</dd>
+        <dt>Page origin</dt><dd>{report.pageOrigin}</dd>
+        <dt>Scanner engine</dt><dd>{report.scannerEngineVersion}</dd>
+      </dl>
+      {report.tools.length === 0 && (
+        <Empty text="No WebMCP tools are registered on this page. AgentSafe still scanned the webpage for ordinary hidden and indirect prompt-injection risks." />
+      )}
+      {report.tools.map((result, index) => (
+        <article className={`finding ${riskSeverity(result.riskScore)}`} key={`${result.tool.type}:${result.tool.name ?? index}`}>
+          <div className="finding-head">
+            <strong>{result.tool.name ?? "Unnamed tool"}</strong>
+            <span>{result.decision}</span>
+          </div>
+          <p><b>Type:</b> {result.tool.type} · <b>Action:</b> {result.classification.classification}{result.classification.inferred ? " (inferred)" : ""}</p>
+          <p><b>Risk:</b> {result.riskScore} · <b>Confidence:</b> {Math.round(result.confidence * 100)}% · <b>Findings:</b> {result.findings.length}</p>
+          <p><b>Origin:</b> {result.origin ?? report.pageOrigin}</p>
+          {result.tool.description && <p><b>Description:</b> {result.tool.description}</p>}
+          {result.tool.annotations && <pre>{JSON.stringify(result.tool.annotations, null, 2)}</pre>}
+          <details>
+            <summary>Tool details</summary>
+            <p><b>Parameters:</b> {result.tool.parameterNames.join(", ") || "none"}</p>
+            <p><b>Parameter descriptions:</b> {result.tool.parameterDescriptions.join(" · ") || "none"}</p>
+            <p><b>Enum values:</b> {result.tool.enumValues.join(", ") || "none"}</p>
+            <h2>Input Schema</h2>
+            <pre>{JSON.stringify(result.tool.inputSchema ?? {}, null, 2)}</pre>
+            <h2>Output Schema</h2>
+            <pre>{JSON.stringify(result.tool.outputSchema ?? {}, null, 2)}</pre>
+            {result.findings.map((finding) => (
+              <div className="finding mini" key={`${finding.ruleId}:${finding.evidence}`}>
+                <p><b>{finding.ruleId}</b> · {finding.severity} · {Math.round(finding.confidence * 100)}%</p>
+                <p><b>Evidence:</b> {finding.evidence}</p>
+                <p><b>Why:</b> {finding.explanation}</p>
+                <p><b>Action:</b> {finding.recommendedAction}</p>
+              </div>
+            ))}
+          </details>
+        </article>
+      ))}
+      <div className="toolbar">
+        <button onClick={() => navigator.clipboard.writeText(exportWebMcpReportJson(report))} title="Copy WebMCP report JSON"><Clipboard size={16} /> Copy JSON</button>
+        <button onClick={() => navigator.clipboard.writeText(exportWebMcpReportMarkdown(report))} title="Copy WebMCP report Markdown"><Clipboard size={16} /> Copy Markdown</button>
+        <button onClick={() => download("agentsafe-webmcp-report.json", exportWebMcpReportJson(report), "application/json")} title="Download WebMCP JSON"><Download size={16} /> JSON</button>
+        <button onClick={() => download("agentsafe-webmcp-report.md", exportWebMcpReportMarkdown(report), "text/markdown")} title="Download WebMCP Markdown"><Download size={16} /> Markdown</button>
+      </div>
+    </section>
+  );
+}
+
 function Settings({ settings, setSettings }: { settings: ScannerSettings; setSettings(settings: ScannerSettings): void }) {
   const categories = defaultSettings.enabledCategories;
   const settingsJson = useMemo(() => JSON.stringify(settings, null, 2), [settings]);
@@ -336,6 +414,10 @@ function Settings({ settings, setSettings }: { settings: ScannerSettings; setSet
       <label className="check-row" title="Shows the current tab's finding count on the extension icon after a scan.">
         <input type="checkbox" checked={settings.badgeEnabled} onChange={(event) => setSettings({ ...settings, badgeEnabled: event.target.checked })} />
         <span>Show badge issue count</span>
+      </label>
+      <label className="check-row" title="Experimental. Passively inspects WebMCP tool metadata when the browser exposes it or declarative tool forms are present. AgentSafe never executes WebMCP tools.">
+        <input type="checkbox" checked={settings.experimentalWebMcpSecurity} onChange={(event) => setSettings({ ...settings, experimentalWebMcpSecurity: event.target.checked })} />
+        <span>Experimental WebMCP Security Scanner</span>
       </label>
       <label title="Wait this long after page load before running an auto-scan. Longer delays can help dynamic pages finish rendering."> Auto-scan delay
         <select value={settings.autoScanDelayMs} onChange={(event) => setSettings({ ...settings, autoScanDelayMs: Number(event.target.value) })}>
@@ -442,11 +524,12 @@ async function ensurePageHostAccess(url: string | undefined, requestPermission: 
   if (!granted) throw new Error(accessHelpForUrl(url));
 }
 
-async function saveCachedResult(tabId: number, scan: ScanResult, report: SanitizedExport, source: "manual" | "auto") {
+async function saveCachedResult(tabId: number, scan: ScanResult, report: SanitizedExport, source: "manual" | "auto", webMcpReport?: WebMcpSecurityReport) {
   await chrome.storage.session.set({
     [cacheKey(tabId)]: {
       scan,
       report,
+      webMcpReport,
       source,
       scannedAt: new Date().toISOString()
     } satisfies CachedScan
@@ -507,6 +590,14 @@ function formatScanError(error: unknown): string {
   return String(error);
 }
 
+function riskSeverity(score: number): Severity {
+  if (score >= 85) return "critical";
+  if (score >= 60) return "high";
+  if (score >= 35) return "medium";
+  if (score >= 15) return "low";
+  return "informational";
+}
+
 function snapshotPageForAgentSafe() {
   const clone = document.cloneNode(true) as Document;
   const originalElements = Array.from(document.querySelectorAll<HTMLElement>("body *"));
@@ -522,6 +613,89 @@ function snapshotPageForAgentSafe() {
     html: clone.documentElement.outerHTML,
     url: location.href,
     title: document.title
+  };
+}
+
+function collectWebMcpForAgentSafe() {
+  type Tool = {
+    name?: string;
+    title?: string;
+    description?: string;
+    origin?: string;
+    frameOrigin?: string;
+    type: "declarative" | "imperative" | "unknown";
+    inputSchema?: unknown;
+    outputSchema?: unknown;
+    parameterNames: string[];
+    parameterDescriptions: string[];
+    enumValues: string[];
+    examples: string[];
+    annotations?: Record<string, unknown>;
+    readOnlyHint?: boolean;
+    untrustedContentHint?: boolean;
+  };
+  const hasNavigatorModelContext = "modelContext" in navigator;
+  const forms = Array.from(document.querySelectorAll<HTMLFormElement>("form[toolname][tooldescription]"));
+  const tools: Tool[] = forms.map((form) => {
+    const properties: Record<string, unknown> = {};
+    const required: string[] = [];
+    for (const field of Array.from(form.elements)) {
+      if (!(field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement || field instanceof HTMLSelectElement)) continue;
+      const name = field.name || field.id;
+      if (!name) continue;
+      const description = field.getAttribute("toolparamdescription") ?? undefined;
+      const schema: Record<string, unknown> = { type: field instanceof HTMLInputElement && field.type === "number" ? "number" : "string" };
+      if (description) schema.description = description;
+      if (field instanceof HTMLSelectElement) schema.enum = Array.from(field.options).map((option) => option.value || option.textContent || "").filter(Boolean);
+      properties[name] = schema;
+      if (field.required) required.push(name);
+    }
+    const annotations: Record<string, unknown> = {};
+    for (const attribute of Array.from(form.attributes)) {
+      if (attribute.name.startsWith("toolannotation-")) annotations[attribute.name.slice("toolannotation-".length)] = attribute.value;
+    }
+    return {
+      name: form.getAttribute("toolname") ?? undefined,
+      title: form.getAttribute("tooltitle") ?? undefined,
+      description: form.getAttribute("tooldescription") ?? undefined,
+      origin: location.origin,
+      frameOrigin: location.origin,
+      type: "declarative",
+      inputSchema: { type: "object", properties, required },
+      outputSchema: undefined,
+      parameterNames: Object.keys(properties),
+      parameterDescriptions: Object.values(properties).map((value) => typeof value === "object" && value && "description" in value ? String((value as { description?: unknown }).description ?? "") : "").filter(Boolean),
+      enumValues: Object.values(properties).flatMap((value) => typeof value === "object" && value && "enum" in value && Array.isArray((value as { enum?: unknown }).enum) ? ((value as { enum: string[] }).enum) : []),
+      examples: [],
+      annotations: Object.keys(annotations).length ? annotations : undefined,
+      readOnlyHint: form.hasAttribute("readonlyhint") || form.getAttribute("readonlyhint") === "true" || undefined,
+      untrustedContentHint: form.hasAttribute("untrustedcontenthint") || form.getAttribute("untrustedcontenthint") === "true" || undefined
+    };
+  });
+  const exposed = Array.isArray((globalThis as { __agentsafeWebMcpTools?: unknown[] }).__agentsafeWebMcpTools)
+    ? ((globalThis as { __agentsafeWebMcpTools?: Partial<Tool>[] }).__agentsafeWebMcpTools ?? []).map((tool) => ({
+        type: "imperative" as const,
+        parameterNames: [],
+        parameterDescriptions: [],
+        enumValues: [],
+        examples: [],
+        origin: location.origin,
+        frameOrigin: location.origin,
+        ...tool
+      }))
+    : [];
+  return {
+    support: {
+      status: hasNavigatorModelContext ? "supported" as const : forms.length ? "partial" as const : "unsupported" as const,
+      hasNavigatorModelContext,
+      hasDeclarativeCandidates: forms.length > 0,
+      message: hasNavigatorModelContext
+        ? "WebMCP browser API detected. AgentSafe scans registered metadata passively."
+        : "WebMCP API was not detected. For local Chrome testing, enable chrome://flags/#enable-webmcp-testing and relaunch Chrome."
+    },
+    pageUrl: location.href,
+    pageOrigin: location.origin,
+    tools: [...tools, ...exposed]
   };
 }
 

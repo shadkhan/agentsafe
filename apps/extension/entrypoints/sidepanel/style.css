@@ -62,6 +62,7 @@ button.active, button.primary {
 }
 .score span { font-size: 30px; font-weight: 700; }
 .score small { grid-column: 2; color: #5f6368; }
+.webmcp-score span { font-size: 26px; }
 .grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -96,6 +97,11 @@ button.active, button.primary {
 .finding.medium { border-left-color: #d97706; }
 .finding.low { border-left-color: #2563eb; }
 .finding.informational { border-left-color: #64748b; }
+.finding.mini {
+  margin: 8px 0;
+  padding: 8px;
+  border-left-width: 3px;
+}
 .finding-head {
   display: flex;
   align-items: center;
@@ -147,3 +153,12 @@ label.check-row span {
 dl { margin: 0; }
 dt { margin-top: 8px; font-weight: 700; }
 dd { margin: 0; overflow-wrap: anywhere; color: #444; }
+details {
+  margin-top: 8px;
+}
+summary {
+  min-height: 30px;
+  padding: 6px 0;
+  cursor: pointer;
+  font-weight: 700;
+}

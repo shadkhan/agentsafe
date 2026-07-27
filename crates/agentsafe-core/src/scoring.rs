@@ -1,6 +1,16 @@
 use crate::{Finding, RiskAssessment, Sensitivity, Severity};
 use std::collections::BTreeMap;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SignalCounts {
+    pub hidden: u32,
+    pub instruction: u32,
+    pub unicode: u32,
+    pub encoded: u32,
+    pub metadata: u32,
+    pub exfiltration: u32,
+}
+
 pub fn severity_for_score(score: u32) -> Severity {
     if score >= 85 {
         Severity::Critical
@@ -16,26 +26,21 @@ pub fn severity_for_score(score: u32) -> Severity {
 }
 
 pub fn score_signals(
-    hidden_signals: u32,
-    instruction_signals: u32,
-    unicode_signals: u32,
-    encoded_signals: u32,
-    metadata_signals: u32,
-    exfiltration_signals: u32,
+    signals: SignalCounts,
     visible_to_user: bool,
     likely_in_extracted_text: bool,
     sensitivity: Sensitivity,
 ) -> (u32, Severity, f64) {
-    let mut score = hidden_signals * 18
-        + instruction_signals * 20
-        + unicode_signals * 16
-        + encoded_signals * 28
-        + metadata_signals * 12
-        + exfiltration_signals * 26;
+    let mut score = signals.hidden * 18
+        + signals.instruction * 20
+        + signals.unicode * 16
+        + signals.encoded * 28
+        + signals.metadata * 12
+        + signals.exfiltration * 26;
     if !visible_to_user && likely_in_extracted_text {
         score += 18;
     }
-    if !visible_to_user && instruction_signals > 0 {
+    if !visible_to_user && signals.instruction > 0 {
         score += 12;
     }
     let mut score_f = score as f64;
@@ -45,14 +50,13 @@ pub fn score_signals(
         Sensitivity::High => score_f *= 1.16,
     }
     let score = score_f.round().clamp(1.0, 100.0) as u32;
-    let total_signals = hidden_signals
-        + instruction_signals
-        + unicode_signals
-        + encoded_signals
-        + metadata_signals
-        + exfiltration_signals;
-    let confidence = (0.28 + total_signals as f64 * 0.14 + score as f64 / 260.0)
-        .clamp(0.2, 0.98);
+    let total_signals = signals.hidden
+        + signals.instruction
+        + signals.unicode
+        + signals.encoded
+        + signals.metadata
+        + signals.exfiltration;
+    let confidence = (0.28 + total_signals as f64 * 0.14 + score as f64 / 260.0).clamp(0.2, 0.98);
     let confidence = (confidence * 100.0).round() / 100.0;
     (score, severity_for_score(score), confidence)
 }

@@ -7,7 +7,10 @@
   "sideEffects": false,
   "files": [
     "dist",
-    "pkg",
+    "pkg/agentsafe_wasm.js",
+    "pkg/agentsafe_wasm.d.ts",
+    "pkg/agentsafe_wasm_bg.wasm",
+    "pkg/agentsafe_wasm_bg.wasm.d.ts",
     "src",
     "README.md"
   ],

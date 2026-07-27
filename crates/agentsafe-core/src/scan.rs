@@ -1,15 +1,18 @@
 use crate::registry::Scanner;
-use crate::scoring::{score_signals, summarize_risk};
+use crate::scoring::{score_signals, summarize_risk, SignalCounts};
 use crate::{
     Evidence, Finding, PatternEngine, RuleCategory, ScanCompleteness, ScanError, ScanLimits,
-    ScanResult, Sensitivity, SourceContext, StructuredScanRequest, TextScanRequest, ENGINE_VERSION,
+    ScanResult, SourceContext, StructuredScanRequest, TextScanRequest, ENGINE_VERSION,
 };
 use base64::Engine;
 use serde_json::Value;
 
 const ZERO_WIDTH: [char; 4] = ['\u{200B}', '\u{200C}', '\u{200D}', '\u{FEFF}'];
 
-pub fn scan_text_with_registry(scanner: &Scanner, request: TextScanRequest) -> Result<ScanResult, ScanError> {
+pub fn scan_text_with_registry(
+    scanner: &Scanner,
+    request: TextScanRequest,
+) -> Result<ScanResult, ScanError> {
     let limits = request.limits.clone();
     if request.text.len() > limits.max_input_bytes {
         return Err(ScanError::InputTooLarge);
@@ -18,9 +21,21 @@ pub fn scan_text_with_registry(scanner: &Scanner, request: TextScanRequest) -> R
     let normalized = normalize_text(&request.text);
     let mut findings = Vec::new();
 
-    scan_regex_and_literals(scanner, &request, &normalized, &mut findings, &mut completeness);
+    scan_regex_and_literals(
+        scanner,
+        &request,
+        &normalized,
+        &mut findings,
+        &mut completeness,
+    );
     scan_unicode(scanner, &request, &mut findings, &mut completeness);
-    scan_encoded(scanner, &request, &normalized, &mut findings, &mut completeness);
+    scan_encoded(
+        scanner,
+        &request,
+        &normalized,
+        &mut findings,
+        &mut completeness,
+    );
 
     if findings.len() >= limits.max_matches {
         completeness.complete = false;
@@ -37,7 +52,10 @@ pub fn scan_text_with_registry(scanner: &Scanner, request: TextScanRequest) -> R
     })
 }
 
-pub fn scan_structured_value(scanner: &Scanner, request: StructuredScanRequest) -> Result<ScanResult, ScanError> {
+pub fn scan_structured_value(
+    scanner: &Scanner,
+    request: StructuredScanRequest,
+) -> Result<ScanResult, ScanError> {
     let mut strings = Vec::new();
     let mut completeness = ScanCompleteness::default();
     collect_strings(
@@ -101,7 +119,10 @@ fn scan_regex_and_literals(
                     continue;
                 }
                 if let Some(regex) = &rule.regex {
-                    for matched in regex.find_iter(text).take(request.limits.max_matches_per_rule) {
+                    for matched in regex
+                        .find_iter(text)
+                        .take(request.limits.max_matches_per_rule)
+                    {
                         findings.push(make_finding(
                             &rule.definition,
                             request,
@@ -135,7 +156,12 @@ fn scan_regex_and_literals(
     }
 }
 
-fn scan_unicode(scanner: &Scanner, request: &TextScanRequest, findings: &mut Vec<Finding>, completeness: &mut ScanCompleteness) {
+fn scan_unicode(
+    scanner: &Scanner,
+    request: &TextScanRequest,
+    findings: &mut Vec<Finding>,
+    completeness: &mut ScanCompleteness,
+) {
     for rule in scanner.rules() {
         if !matches!(rule.definition.engine, PatternEngine::Unicode) {
             continue;
@@ -161,7 +187,9 @@ fn scan_unicode(scanner: &Scanner, request: &TextScanRequest, findings: &mut Vec
                 vec![rule.definition.id.clone()],
             ));
             count += 1;
-            if count >= request.limits.max_matches_per_rule || findings.len() >= request.limits.max_matches {
+            if count >= request.limits.max_matches_per_rule
+                || findings.len() >= request.limits.max_matches
+            {
                 completeness.complete = false;
                 completeness.match_limit_reached = true;
                 return;
@@ -170,8 +198,18 @@ fn scan_unicode(scanner: &Scanner, request: &TextScanRequest, findings: &mut Vec
     }
 }
 
-fn scan_encoded(scanner: &Scanner, request: &TextScanRequest, text: &str, findings: &mut Vec<Finding>, completeness: &mut ScanCompleteness) {
-    let Some(rule) = scanner.rules().iter().find(|rule| rule.definition.id == "base64-instruction") else {
+fn scan_encoded(
+    scanner: &Scanner,
+    request: &TextScanRequest,
+    text: &str,
+    findings: &mut Vec<Finding>,
+    completeness: &mut ScanCompleteness,
+) {
+    let Some(rule) = scanner
+        .rules()
+        .iter()
+        .find(|rule| rule.definition.id == "base64-instruction")
+    else {
         return;
     };
     let Ok(base64ish) = regex::Regex::new(r"\b(?:[A-Za-z0-9+/]{24,}={0,2})\b") else {
@@ -179,7 +217,9 @@ fn scan_encoded(scanner: &Scanner, request: &TextScanRequest, text: &str, findin
     };
     let mut count = 0usize;
     for matched in base64ish.find_iter(text) {
-        if count >= request.limits.max_matches_per_rule || findings.len() >= request.limits.max_matches {
+        if count >= request.limits.max_matches_per_rule
+            || findings.len() >= request.limits.max_matches
+        {
             completeness.complete = false;
             completeness.match_limit_reached = true;
             return;
@@ -191,7 +231,10 @@ fn scan_encoded(scanner: &Scanner, request: &TextScanRequest, text: &str, findin
         let Ok(decoded_text) = String::from_utf8(decoded) else {
             continue;
         };
-        if !decoded_text.chars().all(|ch| ch == '\t' || ch == '\n' || ch == '\r' || (' '..='~').contains(&ch)) {
+        if !decoded_text
+            .chars()
+            .all(|ch| ch == '\t' || ch == '\n' || ch == '\r' || (' '..='~').contains(&ch))
+        {
             continue;
         }
         let nested_request = TextScanRequest {
@@ -202,7 +245,10 @@ fn scan_encoded(scanner: &Scanner, request: &TextScanRequest, text: &str, findin
             limits: request.limits.clone(),
         };
         let nested = scan_text_with_registry(scanner, nested_request);
-        if nested.map(|result| !result.findings.is_empty()).unwrap_or(false) {
+        if nested
+            .map(|result| !result.findings.is_empty())
+            .unwrap_or(false)
+        {
             findings.push(make_finding(
                 &rule.definition,
                 request,
@@ -234,27 +280,48 @@ fn collect_strings(
             if text.len() > limits.max_string_length {
                 completeness.complete = false;
                 completeness.input_truncated = true;
-                strings.push((path.to_string(), text.chars().take(limits.max_string_length).collect()));
+                strings.push((
+                    path.to_string(),
+                    text.chars().take(limits.max_string_length).collect(),
+                ));
             } else {
                 strings.push((path.to_string(), text.clone()));
             }
         }
         Value::Array(items) => {
             for (idx, item) in items.iter().take(limits.max_array_length).enumerate() {
-                collect_strings(item, &format!("{path}[{idx}]"), depth + 1, limits, strings, completeness)?;
+                collect_strings(
+                    item,
+                    &format!("{path}[{idx}]"),
+                    depth + 1,
+                    limits,
+                    strings,
+                    completeness,
+                )?;
             }
             if items.len() > limits.max_array_length {
                 completeness.complete = false;
-                completeness.notes.push("array length limit reached".to_string());
+                completeness
+                    .notes
+                    .push("array length limit reached".to_string());
             }
         }
         Value::Object(map) => {
             for (key, item) in map.iter().take(limits.max_object_field_count) {
-                collect_strings(item, &format!("{path}.{key}"), depth + 1, limits, strings, completeness)?;
+                collect_strings(
+                    item,
+                    &format!("{path}.{key}"),
+                    depth + 1,
+                    limits,
+                    strings,
+                    completeness,
+                )?;
             }
             if map.len() > limits.max_object_field_count {
                 completeness.complete = false;
-                completeness.notes.push("object field limit reached".to_string());
+                completeness
+                    .notes
+                    .push("object field limit reached".to_string());
             }
         }
         _ => {}
@@ -274,13 +341,32 @@ fn make_finding(
     byte_end: usize,
     signals: Vec<String>,
 ) -> Finding {
+    let signal_counts = SignalCounts {
+        hidden: request.context.hidden_signal_count,
+        instruction: signals
+            .iter()
+            .filter(|signal| {
+                signal.contains("instruction")
+                    || *signal == "role-manipulation"
+                    || *signal == "reveal-system-prompt"
+            })
+            .count() as u32,
+        unicode: signals
+            .iter()
+            .filter(|signal| signal.contains("unicode") || *signal == "bidi-control")
+            .count() as u32,
+        encoded: signals
+            .iter()
+            .filter(|signal| signal.contains("base64"))
+            .count() as u32,
+        metadata: request.context.metadata_signal_count,
+        exfiltration: signals
+            .iter()
+            .filter(|signal| *signal == "tool-use" || *signal == "data-exfiltration")
+            .count() as u32,
+    };
     let (_, severity, confidence) = score_signals(
-        request.context.hidden_signal_count,
-        signals.iter().filter(|signal| signal.contains("instruction") || *signal == "role-manipulation" || *signal == "reveal-system-prompt").count() as u32,
-        signals.iter().filter(|signal| signal.contains("unicode") || *signal == "bidi-control").count() as u32,
-        signals.iter().filter(|signal| signal.contains("base64")).count() as u32,
-        request.context.metadata_signal_count,
-        signals.iter().filter(|signal| *signal == "tool-use" || *signal == "data-exfiltration").count() as u32,
+        signal_counts,
         request.context.visible_to_user,
         request.context.likely_in_extracted_text,
         request.sensitivity,
@@ -299,8 +385,8 @@ fn make_finding(
 }
 
 fn evidence(text: &str, byte_start: usize, byte_end: usize) -> Evidence {
-    let start = byte_start.saturating_sub(80);
-    let end = (byte_end + 80).min(text.len());
+    let start = nearest_char_boundary_at_or_before(text, byte_start.saturating_sub(80));
+    let end = nearest_char_boundary_at_or_after(text, (byte_end + 80).min(text.len()));
     Evidence {
         redacted_text: redact(&text[start..end]),
         byte_start: Some(byte_start),
@@ -308,6 +394,22 @@ fn evidence(text: &str, byte_start: usize, byte_end: usize) -> Evidence {
         char_start: Some(text[..byte_start].chars().count()),
         char_end: Some(text[..byte_end].chars().count()),
     }
+}
+
+fn nearest_char_boundary_at_or_before(text: &str, mut idx: usize) -> usize {
+    idx = idx.min(text.len());
+    while idx > 0 && !text.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
+}
+
+fn nearest_char_boundary_at_or_after(text: &str, mut idx: usize) -> usize {
+    idx = idx.min(text.len());
+    while idx < text.len() && !text.is_char_boundary(idx) {
+        idx += 1;
+    }
+    idx
 }
 
 fn redact(text: &str) -> String {

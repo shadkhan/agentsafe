@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true,
+    "target": "ES2022",
+    "baseUrl": ".",
+    "paths": {
+      "@agentsafe/shared-types": ["../shared-types/src/index.ts"],
+      "@agentsafe/scanner-wasm": ["../scanner-wasm/src/index.ts"]
+    }
+  },
+  "references": [
+    { "path": "../shared-types/tsconfig.json" },
+    { "path": "../scanner-wasm/tsconfig.json" }
+  ],
+  "include": ["src"]
+}

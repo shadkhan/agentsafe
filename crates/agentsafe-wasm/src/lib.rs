@@ -1,6 +1,6 @@
 use agentsafe_core::{
-    default_registry, scan_structured_value, ScanError, Scanner as CoreScanner, StructuredScanRequest,
-    TextScanRequest, ENGINE_VERSION,
+    default_registry, scan_structured_value, ScanError, Scanner as CoreScanner,
+    StructuredScanRequest, TextScanRequest, ENGINE_VERSION,
 };
 use wasm_bindgen::prelude::*;
 

@@ -42,6 +42,7 @@ export interface ScannerSettings {
   autoScanEnabled: boolean;
   badgeEnabled: boolean;
   autoScanDelayMs: number;
+  experimentalWebMcpSecurity: boolean;
 }
 
 export interface ScanContext {
@@ -113,5 +114,6 @@ export const defaultSettings: ScannerSettings = {
   includeAriaHidden: true,
   autoScanEnabled: false,
   badgeEnabled: true,
-  autoScanDelayMs: 1200
+  autoScanDelayMs: 1200,
+  experimentalWebMcpSecurity: typeof navigator !== "undefined" && "modelContext" in navigator
 };

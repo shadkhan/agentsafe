@@ -2,7 +2,7 @@ use agentsafe_core::{ScanLimits, Scanner, Sensitivity, SourceContext, TextScanRe
 use criterion::{criterion_group, criterion_main, Criterion};
 
 fn bench_size(c: &mut Criterion, label: &str, size: usize) {
-    let scanner = Scanner::default().unwrap();
+    let scanner = Scanner::try_default().unwrap();
     let text = "ordinary documentation text ".repeat(size / 28);
     c.bench_function(label, |b| {
         b.iter(|| {

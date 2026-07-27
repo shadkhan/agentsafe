@@ -17,3 +17,14 @@ test("side panel source is present", async ({ page }) => {
   await page.setContent(html);
   await expect(page.locator("#root")).toHaveCount(1);
 });
+
+test("webmcp demo fixture contains representative tools", async ({ page }) => {
+  const html = await readFile(path.resolve(root, "../fixtures/webmcp/demo.html"), "utf8");
+  await page.setContent(html);
+  await expect(page.locator("text=AgentSafe WebMCP Demo")).toBeVisible();
+  await expect(page.locator('form[toolname="searchCatalog"]')).toHaveCount(1);
+  await expect(page.locator('form[toolname="submitSupportRequest"]')).toHaveCount(1);
+  const tools = await page.evaluate(() => window.__agentsafeWebMcpTools);
+  expect(Array.isArray(tools)).toBe(true);
+  expect(tools).toHaveLength(3);
+});
