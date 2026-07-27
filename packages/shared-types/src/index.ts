@@ -38,11 +38,104 @@ export interface ScannerSettings {
   sensitivity: "low" | "medium" | "high";
   domainAllowlist: string[];
   phraseAllowlist: string[];
+  scopedExceptions: ScopedException[];
   includeAriaHidden: boolean;
   autoScanEnabled: boolean;
   badgeEnabled: boolean;
   autoScanDelayMs: number;
   experimentalWebMcpSecurity: boolean;
+  scanMode: ScanMode;
+}
+
+export type ScanMode = "quick" | "standard" | "deep";
+
+export type ScanStatus =
+  | "idle"
+  | "preparing"
+  | "running"
+  | "complete"
+  | "complete_within_configured_limits"
+  | "partial_size_limit"
+  | "partial_node_limit"
+  | "partial_chunk_limit"
+  | "partial_finding_limit"
+  | "partial_rule_timeout"
+  | "partial_worker_failure"
+  | "cancelled"
+  | "failed";
+
+export interface ScanPartialReason {
+  code: ScanStatus;
+  explanation: string;
+  phase: string;
+  source?: string;
+  workCompleted?: number;
+  workSkipped?: number;
+  existingFindingsRemainValid: boolean;
+  recommendedAction: string;
+}
+
+export interface ScanMetrics {
+  scanId: string;
+  mode: ScanMode;
+  status: ScanStatus;
+  startedAt: string;
+  completedAt?: string;
+  elapsedMs: number;
+  nodesVisited: number;
+  textNodesVisited: number;
+  candidateHiddenElements: number;
+  computedStyleInspections: number;
+  charactersExtracted: number;
+  charactersScanned: number;
+  chunksQueued: number;
+  chunksCompleted: number;
+  chunksSkipped: number;
+  workerRestartCount: number;
+  timedOutUnits: string[];
+  partialReasons: ScanPartialReason[];
+  engineVersion?: string;
+  ruleRegistryVersion?: string;
+  appliedExceptionIds: string[];
+}
+
+export interface ScanProgress {
+  scanId: string;
+  phase: string;
+  status: ScanStatus;
+  percentage?: number;
+  nodesVisited: number;
+  estimatedNodes?: number;
+  charactersExtracted: number;
+  charactersScanned: number;
+  chunksQueued: number;
+  chunksCompleted: number;
+  totalEstimatedChunks: number;
+  findingsCount: number;
+  elapsedMs: number;
+  workerRestartCount: number;
+  currentSourceType?: string;
+  currentScanMode: ScanMode;
+}
+
+export type ScopedExceptionScope =
+  | "exact-url"
+  | "url-prefix"
+  | "exact-hostname"
+  | "subdomain"
+  | "development-host"
+  | "global-rule";
+
+export interface ScopedException {
+  id: string;
+  scopeType: ScopedExceptionScope;
+  scopeValue: string;
+  ruleIds: string[];
+  enabled: boolean;
+  createdAt: string;
+  expiresAt?: string;
+  note?: string;
+  source: "user" | "default" | "imported";
 }
 
 export interface ScanContext {
@@ -81,6 +174,7 @@ export interface ScanResult {
   context: ScanContext;
   findings: Finding[];
   summary: ScanSummary;
+  metadata?: ScanMetrics;
 }
 
 export interface SanitizedExport {
@@ -111,9 +205,11 @@ export const defaultSettings: ScannerSettings = {
   sensitivity: "medium",
   domainAllowlist: [],
   phraseAllowlist: [],
+  scopedExceptions: [],
   includeAriaHidden: true,
   autoScanEnabled: false,
   badgeEnabled: true,
   autoScanDelayMs: 1200,
-  experimentalWebMcpSecurity: typeof navigator !== "undefined" && "modelContext" in navigator
+  experimentalWebMcpSecurity: typeof navigator !== "undefined" && "modelContext" in navigator,
+  scanMode: "standard"
 };

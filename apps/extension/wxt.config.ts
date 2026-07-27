@@ -9,6 +9,7 @@ export default defineConfig({
     resolve: {
       alias: {
         "@agentsafe/shared-types": "../../packages/shared-types/src/index.ts",
+        "@agentsafe/browser-scanner-adapter": "../../packages/browser-scanner-adapter/src/index.ts",
         "@agentsafe/risk-engine": "../../packages/risk-engine/src/index.ts",
         "@agentsafe/scanner": "../../packages/scanner/src/index.ts",
         "@agentsafe/scanner-wasm": "../../packages/scanner-wasm/src/index.ts",
@@ -30,6 +31,9 @@ export default defineConfig({
     },
     side_panel: {
       default_path: "sidepanel.html"
+    },
+    content_security_policy: {
+      extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
     }
   }
 });

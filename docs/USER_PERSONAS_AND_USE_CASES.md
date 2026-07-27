@@ -66,6 +66,10 @@ The first public release does not need to support:
 
 ---
 
+# Current Release Accuracy Note
+
+AgentSafe scans locally with packaged browser assets, including a Rust/WASM scanner and a scan Worker for page text. Large-page scans are bounded by mode and can return partial status metadata. Experimental WebMCP inspection is passive and does not execute tools.
+
 # 3. User Persona 1 — Browser-Agent Developer
 
 ## 3.1 Persona summary

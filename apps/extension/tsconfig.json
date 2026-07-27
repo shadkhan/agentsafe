@@ -7,6 +7,7 @@
     "baseUrl": ".",
     "paths": {
       "@agentsafe/shared-types": ["../../packages/shared-types/src/index.ts"],
+      "@agentsafe/browser-scanner-adapter": ["../../packages/browser-scanner-adapter/src/index.ts"],
       "@agentsafe/risk-engine": ["../../packages/risk-engine/src/index.ts"],
       "@agentsafe/scanner": ["../../packages/scanner/src/index.ts"],
       "@agentsafe/scanner-wasm": ["../../packages/scanner-wasm/src/index.ts"],
@@ -17,6 +18,7 @@
   },
   "references": [
     { "path": "../../packages/shared-types/tsconfig.json" },
+    { "path": "../../packages/browser-scanner-adapter/tsconfig.json" },
     { "path": "../../packages/risk-engine/tsconfig.json" },
     { "path": "../../packages/scanner/tsconfig.json" },
     { "path": "../../packages/scanner-wasm/tsconfig.json" },

@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@agentsafe/shared-types": "workspace:*",
+    "@agentsafe/risk-engine": "workspace:*",
     "@agentsafe/scanner-wasm": "workspace:*"
   }
 }

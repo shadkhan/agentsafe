@@ -1,8 +1,9 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { AlertTriangle, ChevronLeft, ChevronRight, Clipboard, Download, Eye, RotateCcw, ScanLine, ShieldCheck, Trash2 } from "lucide-react";
-import { defaultSettings, type Finding, type SanitizedExport, type ScanResult, type ScannerSettings, type Severity } from "@agentsafe/shared-types";
-import { scanDocument } from "@agentsafe/scanner";
+import { AlertTriangle, ChevronLeft, ChevronRight, Clipboard, Download, Eye, RotateCcw, ScanLine, ShieldCheck, Square, Trash2 } from "lucide-react";
+import { runWorkerScan, type PageExtractionResult } from "@agentsafe/browser-scanner-adapter";
+import { summarizeFindings } from "@agentsafe/risk-engine";
+import { defaultSettings, type Finding, type SanitizedExport, type ScanProgress, type ScanResult, type ScannerSettings, type Severity } from "@agentsafe/shared-types";
 import { createSanitizedExport } from "@agentsafe/markdown-exporter";
 import { analyzeWebMcpTools, exportWebMcpReportJson, exportWebMcpReportMarkdown, type WebMcpSecurityReport } from "@agentsafe/webmcp-security";
 import "./style.css";
@@ -42,6 +43,10 @@ function App() {
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [activeFinding, setActiveFinding] = useState(0);
   const [status, setStatus] = useState("Ready. Scanning only runs when you press Scan.");
+  const [progress, setProgress] = useState<ScanProgress | null>(null);
+  const [isScanning, setIsScanning] = useState(false);
+  const activeScan = useRef<{ scanId: string; controller: AbortController; tabId: number } | null>(null);
+  const visibleTabId = useRef<number | null>(null);
 
   useEffect(() => {
     chrome.storage.local.get(["agentsafe.settings"]).then((value) => {
@@ -75,7 +80,7 @@ function App() {
       chrome.tabs.onActivated.removeListener(handleActivated);
       chrome.tabs.onUpdated.removeListener(handleUpdated);
     };
-  }, [settings.autoScanEnabled, settings.autoScanDelayMs, settings.badgeEnabled, settings.sensitivity, settings.enabledCategories, settings.includeAriaHidden, settings.phraseAllowlist, settings.domainAllowlist]);
+  }, [settings.autoScanEnabled, settings.autoScanDelayMs, settings.badgeEnabled, settings.sensitivity, settings.enabledCategories, settings.includeAriaHidden, settings.phraseAllowlist, settings.domainAllowlist, settings.scopedExceptions, settings.scanMode]);
 
   const findings = scan?.findings ?? [];
   const selected = findings[activeFinding];
@@ -84,25 +89,80 @@ function App() {
   async function currentTab() {
     const [tabInfo] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tabInfo?.id) throw new Error("No active tab available.");
+    visibleTabId.current = tabInfo.id;
     return tabInfo;
   }
 
   async function runScan(source: "manual" | "auto" = "manual") {
-    setStatus(source === "auto" ? "Auto-scanning this page locally..." : "Scanning this page locally...");
+    if (activeScan.current) cancelScan();
+    const scanId = crypto.randomUUID();
+    const controller = new AbortController();
+    let startedTabId: number | null = null;
+    setIsScanning(true);
+    setProgress(initialScanProgress(scanId, settings.scanMode, source === "auto" ? "auto_scan_pending" : "preparing_scan", 2));
+    setStatus(source === "auto" ? "Auto-scanning this page locally..." : `Preparing ${settings.scanMode} scan...`);
     await chrome.storage.local.set({ "agentsafe.settings": settings });
     try {
       const tabInfo = await currentTab();
-      const [{ result }] = await executeWithPageAccess(tabInfo, snapshotPageForAgentSafe, undefined, { requestPermission: source === "manual" });
-      const pageSnapshot = result as PageSnapshot | undefined;
-      if (!pageSnapshot) throw new Error("Could not read the active page.");
+      startedTabId = tabInfo.id!;
+      if (isDomainAllowedForAgentSafe(tabInfo.url ?? "", settings.domainAllowlist)) {
+        setScan(null);
+        setReport(null);
+        setWebMcpReport(null);
+        await chrome.action.setBadgeText({ tabId: tabInfo.id!, text: "" });
+        if (isVisibleTab(tabInfo.id!)) setStatus("Scan skipped because this domain is in the allowlist.");
+        return;
+      }
+      activeScan.current = { scanId, controller, tabId: tabInfo.id! };
+      setProgress(initialScanProgress(scanId, settings.scanMode, "extracting_page_text", 6));
+      setStatus("Extracting page text locally...");
+      const extractionResult = await executeWithPageAccess(tabInfo, collectTextSegmentsForAgentSafe, [scanId, settings.scanMode, settings.phraseAllowlist, settings.includeAriaHidden], { requestPermission: source === "manual" });
+      if (controller.signal.aborted) throw new Error("Scan cancelled.");
+      const extractionError = (extractionResult[0] as chrome.scripting.InjectionResult & { error?: { message?: string } } | undefined)?.error;
+      if (extractionError) throw new Error(extractionError.message ?? "Could not extract text from the active page.");
+      const extraction = extractionResult[0]?.result as PageExtractionResult | undefined;
+      if (!extraction) throw new Error("Could not extract text from the active page.");
+      setProgress({
+        ...initialScanProgress(scanId, settings.scanMode, "queueing_worker_chunks", 10),
+        nodesVisited: extraction.metrics.nodesVisited,
+        charactersExtracted: extraction.metrics.charactersExtracted
+      });
+      setStatus(`Scanning ${extraction.segments.length} extracted text segments in a Worker...`);
+      const workerResult = await runWorkerScan({
+        scanId,
+        pageUrl: extraction.pageUrl,
+        pageTitle: extraction.pageTitle,
+        settings,
+        segments: extraction.segments,
+        extractionMetrics: extraction.metrics,
+        signal: controller.signal,
+        onProgress: (nextProgress) => {
+          if (activeScan.current?.scanId !== nextProgress.scanId) return;
+          if (!isVisibleTab(tabInfo.id!)) return;
+          setProgress(nextProgress);
+          setStatus(`${nextProgress.phase.replaceAll("_", " ")}: ${nextProgress.chunksCompleted}/${nextProgress.totalEstimatedChunks} chunks, ${nextProgress.findingsCount} findings.`);
+        }
+      });
+      if (controller.signal.aborted) throw new Error("Scan cancelled.");
+      const snapshotInjection = await executeWithPageAccess(tabInfo, snapshotPageForAgentSafe, undefined, { requestPermission: false });
+      const pageSnapshot = snapshotInjection[0]?.result as PageSnapshot | undefined;
+      if (!pageSnapshot) throw new Error("Could not read page content for export.");
       const parsed = new DOMParser().parseFromString(pageSnapshot.html, "text/html");
       Object.defineProperty(parsed, "title", { value: pageSnapshot.title, configurable: true });
-      const nextScan = scanDocument(parsed, settings);
-      nextScan.context.url = pageSnapshot.url;
-      nextScan.context.title = pageSnapshot.title;
+      const nextScan: ScanResult = {
+        context: {
+          url: extraction.pageUrl,
+          title: extraction.pageTitle,
+          scannedAt: new Date().toISOString(),
+          settings
+        },
+        findings: workerResult.findings,
+        summary: summarizeFindings(workerResult.findings),
+        metadata: workerResult.metrics
+      };
       const nextReport = createSanitizedExport(parsed, nextScan.findings);
-      nextReport.sourceUrl = pageSnapshot.url;
-      nextReport.pageTitle = pageSnapshot.title;
+      nextReport.sourceUrl = extraction.pageUrl;
+      nextReport.pageTitle = extraction.pageTitle;
       const webMcpSnapshot = settings.experimentalWebMcpSecurity
         ? await executeWithPageAccess(tabInfo, collectWebMcpForAgentSafe, undefined, { requestPermission: source === "manual" })
         : [];
@@ -115,16 +175,40 @@ function App() {
             agentSafeVersion: chrome.runtime.getManifest().version
           })
         : null;
-      setScan(nextScan);
-      setReport(nextReport);
-      setWebMcpReport(nextWebMcpReport);
-      setActiveFinding(0);
       await saveCachedResult(tabInfo.id!, nextScan, nextReport, source, nextWebMcpReport ?? undefined);
       await updateBadge(tabInfo.id!, nextScan, settings.badgeEnabled);
-      setStatus(`${source === "auto" ? "Auto-scan" : "Scan"} complete: ${nextScan.findings.length} page findings, ${nextWebMcpReport?.tools.length ?? 0} WebMCP tools.`);
+      if (isVisibleTab(tabInfo.id!)) {
+        setScan(nextScan);
+        setReport(nextReport);
+        setWebMcpReport(nextWebMcpReport);
+        setActiveFinding(0);
+        setStatus(`${scanStatusText(workerResult.status)}: ${nextScan.findings.length} page findings, ${nextWebMcpReport?.tools.length ?? 0} WebMCP tools.`);
+      }
     } catch (error) {
-      if (source === "manual") setStatus(`Scan failed. ${formatScanError(error)}`);
+      if (isVisibleTab(activeScan.current?.tabId ?? null)) {
+        if (formatScanError(error).includes("cancelled")) {
+          setStatus("Scan cancelled. Findings shown were detected before cancellation.");
+        } else if (source === "manual") {
+          setStatus(`Scan failed. ${formatScanError(error)}`);
+        }
+      }
+    } finally {
+      if (activeScan.current?.scanId === scanId) activeScan.current = null;
+      if (isVisibleTab(startedTabId)) setIsScanning(false);
     }
+  }
+
+  function isVisibleTab(tabId: number | null): boolean {
+    return tabId !== null && visibleTabId.current === tabId;
+  }
+
+  function cancelScan() {
+    const scan = activeScan.current;
+    if (!scan) return;
+    scan.controller.abort();
+    setIsScanning(false);
+    setStatus("Cancelling scan...");
+    void chrome.tabs.get(scan.tabId).then((tabInfo) => executeWithPageAccess(tabInfo, cancelTextExtractionForAgentSafe, [scan.scanId], { requestPermission: false })).catch(() => undefined);
   }
 
   async function runAutoScanForTab(tabId: number) {
@@ -145,15 +229,31 @@ function App() {
   async function loadCachedResult() {
     const tabInfo = await currentTab().catch(() => null);
     if (!tabInfo?.id) return;
+    if (activeScan.current?.tabId === tabInfo.id) {
+      setIsScanning(true);
+      setStatus("Scan running on this tab...");
+    } else {
+      setIsScanning(false);
+      setProgress(null);
+    }
     const key = cacheKey(tabInfo.id);
     const stored = await chrome.storage.session.get([key]);
     const cached = stored[key] as CachedScan | undefined;
-    if (!cached) return;
+    if (!cached) {
+      if (activeScan.current?.tabId !== tabInfo.id) {
+        setScan(null);
+        setReport(null);
+        setWebMcpReport(null);
+        setActiveFinding(0);
+        setStatus("Ready. Scanning only runs when you press Scan.");
+      }
+      return;
+    }
     setScan(cached.scan);
     setReport(cached.report);
     setWebMcpReport(cached.webMcpReport ?? null);
     setActiveFinding(0);
-    setStatus(`Loaded ${cached.source} scan from ${new Date(cached.scannedAt).toLocaleTimeString()}: ${cached.scan.findings.length} findings.`);
+    if (activeScan.current?.tabId !== tabInfo.id) setStatus(`Loaded ${cached.source} scan from ${new Date(cached.scannedAt).toLocaleTimeString()}: ${cached.scan.findings.length} findings.`);
   }
 
   async function highlight(finding: Finding | undefined) {
@@ -185,9 +285,6 @@ function App() {
           <h1>AgentSafe</h1>
           <p>Prompt Injection Detector</p>
         </div>
-        <button className="primary" onClick={() => runScan("manual")} title="Scan current page">
-          <ScanLine size={17} /> Scan
-        </button>
       </header>
 
       <nav>
@@ -198,7 +295,7 @@ function App() {
         ))}
       </nav>
 
-      <p className="status">{status}</p>
+      <ScanControls isScanning={isScanning} mode={settings.scanMode} status={status} progress={progress} onScan={() => runScan("manual")} onCancel={cancelScan} />
 
       {tab === "summary" && <Summary scan={scan} />}
       {tab === "findings" && <Findings findings={findings} selected={selected} activeFinding={activeFinding} next={next} highlight={highlight} reveal={reveal} clear={clear} />}
@@ -211,8 +308,71 @@ function App() {
   );
 }
 
+function ScanControls(props: {
+  isScanning: boolean;
+  mode: ScannerSettings["scanMode"];
+  status: string;
+  progress: ScanProgress | null;
+  onScan(): void;
+  onCancel(): void;
+}) {
+  return (
+    <section className="scan-controls">
+      <div className="scan-actions">
+        <button className="primary" onClick={props.onScan} disabled={props.isScanning} title="Scan current page">
+          <ScanLine size={17} /> Scan
+        </button>
+        <button onClick={props.onCancel} disabled={!props.isScanning} title="Cancel current scan">
+          <Square size={16} /> Cancel
+        </button>
+        <span>{props.mode} mode</span>
+      </div>
+      <p className={`status ${props.isScanning ? "active" : ""}`}>{props.status}</p>
+      {(props.progress || props.isScanning) && (
+        <ProgressMeter progress={props.progress ?? initialScanProgress("pending", props.mode, "preparing_scan", 1)} />
+      )}
+    </section>
+  );
+}
+
+function ProgressMeter({ progress }: { progress: ScanProgress }) {
+  return (
+    <section className="progress-panel">
+      <div className="progress-row">
+        <strong>{progress.percentage ?? 0}%</strong>
+        <span>{progress.currentScanMode} - {progress.phase.replaceAll("_", " ")}</span>
+      </div>
+      <progress max={100} value={progress.percentage ?? 0} />
+      <div className="grid">
+        <div className="metric"><strong>{progress.charactersScanned}</strong><span>chars scanned</span></div>
+        <div className="metric"><strong>{progress.chunksCompleted}/{progress.totalEstimatedChunks}</strong><span>chunks</span></div>
+      </div>
+    </section>
+  );
+}
+
+function initialScanProgress(scanId: string, mode: ScannerSettings["scanMode"], phase: string, percentage: number): ScanProgress {
+  return {
+    scanId,
+    phase,
+    status: "running",
+    percentage,
+    nodesVisited: 0,
+    charactersExtracted: 0,
+    charactersScanned: 0,
+    chunksQueued: 0,
+    chunksCompleted: 0,
+    totalEstimatedChunks: 0,
+    findingsCount: 0,
+    elapsedMs: 0,
+    workerRestartCount: 0,
+    currentScanMode: mode
+  };
+}
+
 function Summary({ scan }: { scan: ScanResult | null }) {
   const severities: Severity[] = ["critical", "high", "medium", "low", "informational"];
+  const metadata = scan?.metadata;
   return (
     <section>
       <div className="score">
@@ -233,6 +393,15 @@ function Summary({ scan }: { scan: ScanResult | null }) {
         <div className="metric"><strong>{scan?.summary.suspiciousUnicodeCount ?? 0}</strong><span>unicode</span></div>
         <div className="metric"><strong>{scan?.summary.instructionPatternCount ?? 0}</strong><span>instructions</span></div>
       </div>
+      {metadata && (
+        <div className={`status ${metadata.status.startsWith("partial") ? "warning" : ""}`}>
+          <strong>{scanStatusText(metadata.status)}</strong>
+          <p>{metadata.charactersScanned} characters scanned across {metadata.chunksCompleted}/{metadata.chunksQueued} chunks. Worker restarts: {metadata.workerRestartCount}.</p>
+          {metadata.partialReasons.map((reason) => (
+            <p key={`${reason.code}:${reason.source ?? reason.phase}`}><b>{reason.code}:</b> {reason.explanation}</p>
+          ))}
+        </div>
+      )}
       <p className="disclaimer">Detection is advisory and local. It can miss attacks and can flag benign content, so review evidence before relying on any result.</p>
     </section>
   );
@@ -285,14 +454,14 @@ function FindingCard({ finding }: { finding: Finding }) {
     <article className={`finding ${finding.severity}`}>
       <div className="finding-head">
         <strong>{finding.ruleId}</strong>
-        <span>{finding.severity} · {Math.round(finding.confidence * 100)}%</span>
+        <span>{finding.severity} - {Math.round(finding.confidence * 100)}%</span>
       </div>
       <p><b>Selector:</b> {finding.selector}</p>
       <p><b>Evidence:</b> {finding.evidence}</p>
       {finding.decodedEvidence && <p><b>Decoded:</b> {finding.decodedEvidence}</p>}
       <p><b>Why:</b> {finding.explanation}</p>
       <p><b>Action:</b> {finding.recommendedAction}</p>
-      <p><b>Visible:</b> {finding.visibleToUser ? "yes" : "no"} · <b>Likely extracted:</b> {finding.likelyInExtractedText ? "yes" : "no"}</p>
+      <p><b>Visible:</b> {finding.visibleToUser ? "yes" : "no"} - <b>Likely extracted:</b> {finding.likelyInExtractedText ? "yes" : "no"}</p>
       {finding.cssProperties && <pre>{JSON.stringify(finding.cssProperties, null, 2)}</pre>}
     </article>
   );
@@ -342,7 +511,7 @@ function WebMcpSecurity({ report, enabled }: { report: WebMcpSecurityReport | nu
         <small>Experimental WebMCP tools discovered</small>
       </div>
       <dl>
-        <dt>Browser support</dt><dd>{report.browserSupport.status} · {report.browserSupport.message}</dd>
+        <dt>Browser support</dt><dd>{report.browserSupport.status} - {report.browserSupport.message}</dd>
         <dt>Page origin</dt><dd>{report.pageOrigin}</dd>
         <dt>Scanner engine</dt><dd>{report.scannerEngineVersion}</dd>
       </dl>
@@ -355,15 +524,15 @@ function WebMcpSecurity({ report, enabled }: { report: WebMcpSecurityReport | nu
             <strong>{result.tool.name ?? "Unnamed tool"}</strong>
             <span>{result.decision}</span>
           </div>
-          <p><b>Type:</b> {result.tool.type} · <b>Action:</b> {result.classification.classification}{result.classification.inferred ? " (inferred)" : ""}</p>
-          <p><b>Risk:</b> {result.riskScore} · <b>Confidence:</b> {Math.round(result.confidence * 100)}% · <b>Findings:</b> {result.findings.length}</p>
+          <p><b>Type:</b> {result.tool.type} - <b>Action:</b> {result.classification.classification}{result.classification.inferred ? " (inferred)" : ""}</p>
+          <p><b>Risk:</b> {result.riskScore} - <b>Confidence:</b> {Math.round(result.confidence * 100)}% - <b>Findings:</b> {result.findings.length}</p>
           <p><b>Origin:</b> {result.origin ?? report.pageOrigin}</p>
           {result.tool.description && <p><b>Description:</b> {result.tool.description}</p>}
           {result.tool.annotations && <pre>{JSON.stringify(result.tool.annotations, null, 2)}</pre>}
           <details>
             <summary>Tool details</summary>
             <p><b>Parameters:</b> {result.tool.parameterNames.join(", ") || "none"}</p>
-            <p><b>Parameter descriptions:</b> {result.tool.parameterDescriptions.join(" · ") || "none"}</p>
+            <p><b>Parameter descriptions:</b> {result.tool.parameterDescriptions.join(" - ") || "none"}</p>
             <p><b>Enum values:</b> {result.tool.enumValues.join(", ") || "none"}</p>
             <h2>Input Schema</h2>
             <pre>{JSON.stringify(result.tool.inputSchema ?? {}, null, 2)}</pre>
@@ -371,7 +540,7 @@ function WebMcpSecurity({ report, enabled }: { report: WebMcpSecurityReport | nu
             <pre>{JSON.stringify(result.tool.outputSchema ?? {}, null, 2)}</pre>
             {result.findings.map((finding) => (
               <div className="finding mini" key={`${finding.ruleId}:${finding.evidence}`}>
-                <p><b>{finding.ruleId}</b> · {finding.severity} · {Math.round(finding.confidence * 100)}%</p>
+                <p><b>{finding.ruleId}</b> - {finding.severity} - {Math.round(finding.confidence * 100)}%</p>
                 <p><b>Evidence:</b> {finding.evidence}</p>
                 <p><b>Why:</b> {finding.explanation}</p>
                 <p><b>Action:</b> {finding.recommendedAction}</p>
@@ -393,6 +562,7 @@ function WebMcpSecurity({ report, enabled }: { report: WebMcpSecurityReport | nu
 function Settings({ settings, setSettings }: { settings: ScannerSettings; setSettings(settings: ScannerSettings): void }) {
   const categories = defaultSettings.enabledCategories;
   const settingsJson = useMemo(() => JSON.stringify(settings, null, 2), [settings]);
+  const exceptionsJson = useMemo(() => JSON.stringify(settings.scopedExceptions, null, 2), [settings.scopedExceptions]);
   const categoryHelp: Record<string, string> = {
     "hidden-css": "Detects text hidden with CSS such as display:none, opacity, clipping, tiny font size, or off-screen positioning.",
     "unicode-security": "Detects zero-width and bidirectional Unicode controls that can hide or reorder text.",
@@ -434,6 +604,13 @@ function Settings({ settings, setSettings }: { settings: ScannerSettings; setSet
           <option value="high">High</option>
         </select>
       </label>
+      <label title="Controls Worker chunk size and resource budgets. Deep scan is intended for explicit manual review of large pages."> Scan mode
+        <select value={settings.scanMode} onChange={(event) => setSettings({ ...settings, scanMode: event.target.value as ScannerSettings["scanMode"] })}>
+          <option value="quick">Quick</option>
+          <option value="standard">Standard</option>
+          <option value="deep">Deep</option>
+        </select>
+      </label>
       <label className="check-row" title="When enabled, aria-hidden text is inspected for instruction-like content because extraction pipelines may still include it.">
         <input type="checkbox" checked={settings.includeAriaHidden} onChange={(event) => setSettings({ ...settings, includeAriaHidden: event.target.checked })} />
         <span>Include aria-hidden content</span>
@@ -457,6 +634,14 @@ function Settings({ settings, setSettings }: { settings: ScannerSettings; setSet
       </div>
       <label title="Domains listed here are skipped by the scanner. Add one domain per line, such as example.com.">Domain allowlist<textarea value={settings.domainAllowlist.join("\n")} onChange={(event) => setSettings({ ...settings, domainAllowlist: event.target.value.split(/\r?\n/).filter(Boolean) })} /></label>
       <label title="Phrases listed here are ignored when matching findings. Add one phrase per line.">Phrase allowlist<textarea value={settings.phraseAllowlist.join("\n")} onChange={(event) => setSettings({ ...settings, phraseAllowlist: event.target.value.split(/\r?\n/).filter(Boolean) })} /></label>
+      <label title="Scoped exceptions are local JSON rules. Prefer rule-specific exceptions over broad domain skips.">Scoped exceptions<textarea value={exceptionsJson} onChange={(event) => {
+        try {
+          const parsed = JSON.parse(event.target.value);
+          if (Array.isArray(parsed)) setSettings({ ...settings, scopedExceptions: parsed });
+        } catch {
+          // Keep typing until valid JSON is available.
+        }
+      }} /></label>
       <div className="toolbar">
         <button onClick={() => setSettings(defaultSettings)} title="Reset settings"><RotateCcw size={16} /> Reset</button>
         <button onClick={() => navigator.clipboard.writeText(settingsJson)} title="Copy settings JSON"><Clipboard size={16} /> Export</button>
@@ -491,7 +676,6 @@ async function executeWithPageAccess<Args extends unknown[], Result>(
   options: { requestPermission?: boolean } = { requestPermission: true }
 ): Promise<chrome.scripting.InjectionResult[]> {
   if (!tabInfo.id) throw new Error("No active tab available.");
-  await ensurePageHostAccess(tabInfo.url, options.requestPermission ?? true);
   try {
     return await chrome.scripting.executeScript({
       target: { tabId: tabInfo.id },
@@ -501,8 +685,7 @@ async function executeWithPageAccess<Args extends unknown[], Result>(
   } catch (error) {
     if (!isHostPermissionError(error)) throw error;
     if (!options.requestPermission) throw new Error(accessHelpForUrl(tabInfo.url));
-    const granted = await requestPageHostAccess(tabInfo.url);
-    if (!granted) throw new Error(accessHelpForUrl(tabInfo.url));
+    await ensurePageHostAccess(tabInfo.url, true);
     return chrome.scripting.executeScript({
       target: { tabId: tabInfo.id },
       func,
@@ -557,12 +740,6 @@ function isHostPermissionError(error: unknown): boolean {
   return message.includes("Cannot access contents of the page") || message.includes("Extension manifest must request permission");
 }
 
-async function requestPageHostAccess(url: string | undefined): Promise<boolean> {
-  const origin = originPattern(url);
-  if (!origin) return false;
-  return chrome.permissions.request({ origins: [origin] });
-}
-
 function originPattern(url: string | undefined): string | null {
   if (!url) return null;
   try {
@@ -596,6 +773,285 @@ function riskSeverity(score: number): Severity {
   if (score >= 35) return "medium";
   if (score >= 15) return "low";
   return "informational";
+}
+
+function scanStatusText(status: string) {
+  if (status === "complete_within_configured_limits") return "Scan completed within configured limits";
+  if (status.startsWith("partial")) return "Partial scan: some content was not analyzed";
+  if (status === "cancelled") return "Scan cancelled";
+  if (status === "failed") return "Scan failed";
+  return "Scan completed";
+}
+
+function isDomainAllowedForAgentSafe(url: string, allowlist: string[]): boolean {
+  if (!url || allowlist.length === 0) return false;
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return allowlist.some((entry) => {
+      const normalized = entry.trim().toLowerCase();
+      return normalized && (host === normalized || host.endsWith(`.${normalized}`));
+    });
+  } catch {
+    return false;
+  }
+}
+
+function cancelTextExtractionForAgentSafe(scanId: string) {
+  (globalThis as { __agentsafeCancelledScanId?: string }).__agentsafeCancelledScanId = scanId;
+}
+
+async function collectTextSegmentsForAgentSafe(scanId: string, mode: "quick" | "standard" | "deep", phraseAllowlist: string[], includeAriaHidden: boolean) {
+  type Segment = {
+    sourceId: string;
+    nodeId: string;
+    selector: string;
+    frameUrl: string;
+    visibility: "visible" | "hidden" | "metadata" | "comment";
+    tagName: string;
+    text: string;
+    textOffset: number;
+    sourceCharCount: number;
+    hiddenReasons: Record<string, string>;
+    visibleToUser: boolean;
+    likelyInExtractedText: boolean;
+  };
+  const limits = {
+    quick: { nodes: 12_000, textNodes: 4_000, chars: 2 * 1024 * 1024, textNodeChars: 256 * 1024 },
+    standard: { nodes: 35_000, textNodes: 12_000, chars: 5 * 1024 * 1024, textNodeChars: 512 * 1024 },
+    deep: { nodes: 100_000, textNodes: 50_000, chars: 20 * 1024 * 1024, textNodeChars: 1024 * 1024 }
+  }[mode];
+  const started = performance.now();
+  const segments: Segment[] = [];
+  const partialReasons: Array<{ code: string; explanation: string; phase: string; source?: string; workCompleted?: number; workSkipped?: number }> = [];
+  let nodesVisited = 0;
+  let textNodesVisited = 0;
+  let candidateHiddenElements = 0;
+  let computedStyleInspections = 0;
+  let charactersExtracted = 0;
+  let nodeCounter = 0;
+  const cancelled = () => (globalThis as { __agentsafeCancelledScanId?: string }).__agentsafeCancelledScanId === scanId;
+  const pause = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const selectorForAgentSafe = (element: Element): string => {
+    const cssEscape = globalThis.CSS?.escape ?? ((value: string) => value.replace(/[^a-zA-Z0-9_-]/g, "\\$&"));
+    if (element.id) return `#${cssEscape(element.id)}`;
+    const parts: string[] = [];
+    let current: Element | null = element;
+    while (current && current.nodeType === Node.ELEMENT_NODE && parts.length < 5) {
+      const tag = current.tagName.toLowerCase();
+      const parent: Element | null = current.parentElement;
+      if (!parent) {
+        parts.unshift(tag);
+        break;
+      }
+      const index = Array.from(parent.children).filter((child) => child.tagName === current!.tagName).indexOf(current) + 1;
+      parts.unshift(`${tag}:nth-of-type(${index})`);
+      current = parent;
+    }
+    return parts.join(" > ");
+  };
+  const cheapHiddenReasonsForAgentSafe = (element: Element): Record<string, string> => {
+    const reasons: Record<string, string> = {};
+    if ((element as HTMLElement).hidden) reasons.hidden = "hidden attribute";
+    if (element.getAttribute("aria-hidden") === "true") reasons.ariaHidden = "aria-hidden=true";
+    const style = element.getAttribute("style") ?? "";
+    if (/display\s*:\s*none/i.test(style)) reasons.display = "inline display:none";
+    if (/visibility\s*:\s*hidden/i.test(style)) reasons.visibility = "inline visibility:hidden";
+    if (/opacity\s*:\s*(0|0\.0+)/i.test(style)) reasons.opacity = "inline opacity near zero";
+    if (/left\s*:\s*-\d{3,}/i.test(style) || /top\s*:\s*-\d{3,}/i.test(style)) reasons.position = "inline off-screen position";
+    if (element.closest("template,noscript")) reasons.container = "template/noscript container";
+    return reasons;
+  };
+  const computedHiddenReasonsForAgentSafe = (element: Element): Record<string, string> => {
+    const reasons: Record<string, string> = {};
+    const style = getComputedStyle(element);
+    if (style.display === "none") reasons.display = style.display;
+    if (style.visibility === "hidden" || style.visibility === "collapse") reasons.visibility = style.visibility;
+    if (Number.parseFloat(style.opacity || "1") <= 0.03) reasons.opacity = style.opacity;
+    if (Number.parseFloat(style.fontSize || "16") <= 1) reasons.fontSize = style.fontSize;
+    const rect = element.getBoundingClientRect();
+    if ((rect.width === 0 || rect.height === 0) && (element.textContent?.trim().length ?? 0) > 0) reasons.box = `${rect.width}x${rect.height}`;
+    const left = Number.parseFloat(style.left || "0");
+    const top = Number.parseFloat(style.top || "0");
+    if ((style.position === "absolute" || style.position === "fixed") && (left < -999 || top < -999 || left > 20000 || top > 20000)) reasons.position = `${style.position}; left:${style.left}; top:${style.top}`;
+    const clip = [style.clip, style.clipPath].filter(Boolean).join(" ");
+    if (/rect\(\s*0(px)?\s*,?\s*0(px)?\s*,?\s*0(px)?\s*,?\s*0(px)?\s*\)|inset\(50%\)/i.test(clip)) reasons.clip = clip;
+    return reasons;
+  };
+  const allowedPhrases = phraseAllowlist.map((phrase) => phrase.trim().toLowerCase()).filter(Boolean);
+  const isAllowedPhrase = (text: string) => {
+    const normalized = text.toLowerCase();
+    return allowedPhrases.some((phrase) => normalized.includes(phrase));
+  };
+  const pushSegment = (segment: Segment) => {
+    if (!segment.text.trim()) return;
+    if (isAllowedPhrase(segment.text)) return;
+    if (segment.hiddenReasons.ariaHidden && !includeAriaHidden) return;
+    if (charactersExtracted >= limits.chars) return;
+    const remaining = limits.chars - charactersExtracted;
+    const text = segment.text.slice(0, Math.min(segment.text.length, remaining, limits.textNodeChars));
+    if (text.length < segment.text.length) {
+      partialReasons.push({
+        code: text.length >= remaining ? "partial_size_limit" : "partial_node_limit",
+        explanation: text.length >= remaining ? `Configured ${mode} character limit reached.` : "Individual text-node limit reached.",
+        phase: "extracting_text",
+        source: segment.selector,
+        workCompleted: charactersExtracted,
+        workSkipped: segment.text.length - text.length
+      });
+    }
+    segments.push({ ...segment, text, sourceCharCount: segment.text.length });
+    charactersExtracted += text.length;
+  };
+
+  const meta = Array.from(document.querySelectorAll<HTMLMetaElement>("meta[content]"));
+  for (const element of meta) {
+    pushSegment({
+      sourceId: `meta:${nodeCounter++}`,
+      nodeId: `meta:${nodeCounter}`,
+      selector: selectorForAgentSafe(element),
+      frameUrl: location.href,
+      visibility: "metadata",
+      tagName: "meta",
+      text: element.content,
+      textOffset: 0,
+      sourceCharCount: element.content.length,
+      hiddenReasons: { metadata: "meta[content]" },
+      visibleToUser: false,
+      likelyInExtractedText: true
+    });
+  }
+
+  const walker = document.createTreeWalker(document.body ?? document.documentElement, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_COMMENT);
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    if (cancelled()) {
+      partialReasons.push({ code: "cancelled", explanation: "DOM traversal cancelled by user.", phase: "traversing_dom", workCompleted: nodesVisited });
+      break;
+    }
+    nodesVisited += 1;
+    if (nodesVisited > limits.nodes) {
+      partialReasons.push({ code: "partial_node_limit", explanation: "DOM node limit reached.", phase: "traversing_dom", workCompleted: nodesVisited });
+      break;
+    }
+    if (node.nodeType === Node.COMMENT_NODE) {
+      const text = (node as Comment).data.trim();
+      if (text) pushSegment({
+        sourceId: `comment:${nodeCounter++}`,
+        nodeId: `comment:${nodeCounter}`,
+        selector: "comment()",
+        frameUrl: location.href,
+        visibility: "comment",
+        tagName: "#comment",
+        text,
+        textOffset: 0,
+        sourceCharCount: text.length,
+        hiddenReasons: { comment: "HTML comment" },
+        visibleToUser: false,
+        likelyInExtractedText: false
+      });
+    } else {
+      textNodesVisited += 1;
+      if (textNodesVisited > limits.textNodes) {
+        partialReasons.push({ code: "partial_node_limit", explanation: "Text-node limit reached.", phase: "extracting_text", workCompleted: textNodesVisited });
+        break;
+      }
+      const raw = node.textContent ?? "";
+      const text = raw.replace(/\s+/g, " ").trim();
+      const element = node.parentElement;
+      if (!text || !element || element.closest("script,style")) continue;
+      const cheap = cheapHiddenReasonsForAgentSafe(element);
+      let hiddenReasons = cheap;
+      if (Object.keys(cheap).length > 0 || element.getBoundingClientRect().width === 0 || element.getBoundingClientRect().height === 0) {
+        candidateHiddenElements += 1;
+        computedStyleInspections += 1;
+        hiddenReasons = { ...cheap, ...computedHiddenReasonsForAgentSafe(element) };
+      }
+      const visibility = Object.keys(hiddenReasons).length ? "hidden" : "visible";
+      pushSegment({
+        sourceId: `text:${nodeCounter++}`,
+        nodeId: `text:${nodeCounter}`,
+        selector: selectorForAgentSafe(element),
+        frameUrl: location.href,
+        visibility,
+        tagName: element.tagName.toLowerCase(),
+        text,
+        textOffset: 0,
+        sourceCharCount: raw.length,
+        hiddenReasons,
+        visibleToUser: visibility === "visible",
+        likelyInExtractedText: element.closest("noscript,template") === null
+      });
+    }
+    if (nodesVisited % 250 === 0) await pause();
+    if (charactersExtracted >= limits.chars) {
+      partialReasons.push({ code: "partial_size_limit", explanation: `Configured ${mode} character limit reached.`, phase: "extracting_text", workCompleted: charactersExtracted });
+      break;
+    }
+  }
+  return {
+    scanId,
+    pageUrl: location.href,
+    pageTitle: document.title,
+    segments,
+    metrics: {
+      nodesVisited,
+      textNodesVisited,
+      candidateHiddenElements,
+      computedStyleInspections,
+      charactersExtracted,
+      traversalDurationMs: Math.round(performance.now() - started),
+      partialReasons
+    }
+  };
+}
+
+function cheapHiddenReasonsForAgentSafe(element: Element): Record<string, string> {
+  const reasons: Record<string, string> = {};
+  if ((element as HTMLElement).hidden) reasons.hidden = "hidden attribute";
+  if (element.getAttribute("aria-hidden") === "true") reasons.ariaHidden = "aria-hidden=true";
+  const style = element.getAttribute("style") ?? "";
+  if (/display\s*:\s*none/i.test(style)) reasons.display = "inline display:none";
+  if (/visibility\s*:\s*hidden/i.test(style)) reasons.visibility = "inline visibility:hidden";
+  if (/opacity\s*:\s*(0|0\.0+)/i.test(style)) reasons.opacity = "inline opacity near zero";
+  if (/left\s*:\s*-\d{3,}/i.test(style) || /top\s*:\s*-\d{3,}/i.test(style)) reasons.position = "inline off-screen position";
+  if (element.closest("template,noscript")) reasons.container = "template/noscript container";
+  return reasons;
+}
+
+function computedHiddenReasonsForAgentSafe(element: Element): Record<string, string> {
+  const reasons: Record<string, string> = {};
+  const style = getComputedStyle(element);
+  if (style.display === "none") reasons.display = style.display;
+  if (style.visibility === "hidden" || style.visibility === "collapse") reasons.visibility = style.visibility;
+  if (Number.parseFloat(style.opacity || "1") <= 0.03) reasons.opacity = style.opacity;
+  if (Number.parseFloat(style.fontSize || "16") <= 1) reasons.fontSize = style.fontSize;
+  const rect = element.getBoundingClientRect();
+  if ((rect.width === 0 || rect.height === 0) && (element.textContent?.trim().length ?? 0) > 0) reasons.box = `${rect.width}x${rect.height}`;
+  const left = Number.parseFloat(style.left || "0");
+  const top = Number.parseFloat(style.top || "0");
+  if ((style.position === "absolute" || style.position === "fixed") && (left < -999 || top < -999 || left > 20000 || top > 20000)) reasons.position = `${style.position}; left:${style.left}; top:${style.top}`;
+  const clip = [style.clip, style.clipPath].filter(Boolean).join(" ");
+  if (/rect\(\s*0(px)?\s*,?\s*0(px)?\s*,?\s*0(px)?\s*,?\s*0(px)?\s*\)|inset\(50%\)/i.test(clip)) reasons.clip = clip;
+  return reasons;
+}
+
+function selectorForAgentSafe(element: Element): string {
+  const cssEscape = globalThis.CSS?.escape ?? ((value: string) => value.replace(/[^a-zA-Z0-9_-]/g, "\\$&"));
+  if (element.id) return `#${cssEscape(element.id)}`;
+  const parts: string[] = [];
+  let current: Element | null = element;
+  while (current && current.nodeType === Node.ELEMENT_NODE && parts.length < 5) {
+    const tag = current.tagName.toLowerCase();
+    const parent: Element | null = current.parentElement;
+    if (!parent) {
+      parts.unshift(tag);
+      break;
+    }
+    const index = Array.from(parent.children).filter((child) => child.tagName === current!.tagName).indexOf(current) + 1;
+    parts.unshift(`${tag}:nth-of-type(${index})`);
+    current = parent;
+  }
+  return parts.join(" > ");
 }
 
 function snapshotPageForAgentSafe() {

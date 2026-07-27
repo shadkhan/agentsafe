@@ -10,23 +10,24 @@
     "typecheck": "wxt prepare && tsc --noEmit"
   },
   "dependencies": {
+    "@agentsafe/browser-scanner-adapter": "workspace:*",
     "@agentsafe/dom-sanitizer": "workspace:*",
     "@agentsafe/markdown-exporter": "workspace:*",
     "@agentsafe/risk-engine": "workspace:*",
     "@agentsafe/scanner": "workspace:*",
-    "@agentsafe/webmcp-security": "workspace:*",
     "@agentsafe/shared-types": "workspace:*",
+    "@agentsafe/webmcp-security": "workspace:*",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "wxt": "^0.19.9"
+    "wxt": "^0.21.1"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.268",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
-    "@vitejs/plugin-react": "^4.3.1",
-    "@wxt-dev/module-react": "^1.1.3",
+    "@vitejs/plugin-react": "^4.7.0",
+    "@wxt-dev/module-react": "^1.2.2",
     "typescript": "^5.5.4"
   }
 }

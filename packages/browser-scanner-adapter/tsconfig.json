@@ -2,14 +2,25 @@
   "compilerOptions": {
     "declaration": true,
     "declarationMap": true,
+    "composite": true,
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "outDir": "dist",
     "rootDir": "src",
     "strict": true,
     "target": "ES2022",
-    "types": ["node"]
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@agentsafe/shared-types": ["../shared-types/src/index.ts"],
+      "@agentsafe/risk-engine": ["../risk-engine/src/index.ts"],
+      "@agentsafe/scanner-wasm": ["../scanner-wasm/src/index.ts"]
+    }
   },
-  "references": [{ "path": "../shared-types/tsconfig.json" }],
+  "references": [
+    { "path": "../shared-types/tsconfig.json" },
+    { "path": "../risk-engine/tsconfig.json" },
+    { "path": "../scanner-wasm/tsconfig.json" }
+  ],
   "include": ["src"]
 }

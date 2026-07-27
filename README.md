@@ -7,12 +7,14 @@ It does not use a backend, authentication, telemetry, analytics, remote code, or
 ## MVP Features
 
 - Explicit user-triggered page scanning.
+- Worker-based scanning with quick, standard, and deep scan modes.
+- Bounded DOM traversal, chunking, progress reporting, cancellation, and partial-scan metadata for large pages.
 - Finding evidence, selector, explanation, confidence, severity, visibility, and extraction-likelihood fields.
 - CSS hidden-text checks, Unicode security checks, suspicious comments/meta tags, base64-like instruction decoding, delimiter and exfiltration patterns.
 - Local scoring engine that requires multiple signals for high confidence.
 - Page highlighting, finding navigation, and temporary reveal of hidden content.
 - Sanitized Markdown and JSON report export.
-- Local settings in `chrome.storage.local`.
+- Local settings in `chrome.storage.local`, including rule-scoped exceptions.
 
 ## Development
 
@@ -21,14 +23,22 @@ pnpm install
 pnpm test
 pnpm --filter @agentsafe/extension dev
 pnpm --filter @agentsafe/extension build
+pnpm verify:clean
 ```
 
 Load `apps/extension/.output/chrome-mv3` from `chrome://extensions`. To scan local fixture files, open AgentSafe's extension details and enable "Allow access to file URLs".
+
+The production build must contain a generated scan Worker asset and the local WASM binary:
+
+- `apps/extension/.output/chrome-mv3/assets/scan-worker-*.js`
+- `apps/extension/.output/chrome-mv3/assets/agentsafe_wasm_bg-*.wasm`
 
 ## Structure
 
 - `apps/extension` - WXT React side panel and MV3 extension entrypoints.
 - `packages/scanner` - DOM and text scanner.
+- `packages/browser-scanner-adapter` - browser extraction contracts, worker coordinator, chunking, cancellation, and scoped exception filtering.
+- `packages/scanner-wasm` - TypeScript wrapper for the Rust WASM package.
 - `packages/risk-engine` - scoring and severity mapping.
 - `packages/dom-sanitizer` - local DOM cleanup.
 - `packages/markdown-exporter` - Readability extraction and Markdown/JSON report generation.

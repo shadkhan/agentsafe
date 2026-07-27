@@ -9,7 +9,7 @@ AgentSafe uses:
 - `downloads` for user-requested report downloads.
 - `tabs` to read active-tab URL/title for per-site optional permission prompts when needed.
 
-No host permissions are requested. No data is sent to external services.
+No host permissions are requested. No data is sent to external services. The scan Worker and Rust/WASM scanner are packaged with the extension.
 
 Optional HTTP/HTTPS host access may be requested per site only after the user presses Scan and Chrome denies active-tab access. This is used to inspect the current page, not for background scanning.
 
