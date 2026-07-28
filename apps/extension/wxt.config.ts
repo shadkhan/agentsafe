@@ -23,11 +23,17 @@ export default defineConfig({
     name: "AgentSafe - Prompt Injection Detector",
     short_name: "AgentSafe",
     description: "Detect hidden AI instructions and copy sanitized webpage content safely.",
+    icons: {
+      "128": "icon/128.png"
+    },
     permissions: ["activeTab", "sidePanel", "storage", "scripting", "downloads", "tabs"],
     host_permissions: [],
     optional_host_permissions: ["http://*/*", "https://*/*"],
     action: {
-      default_title: "Scan with AgentSafe"
+      default_title: "Scan with AgentSafe",
+      default_icon: {
+        "128": "icon/128.png"
+      }
     },
     side_panel: {
       default_path: "sidepanel.html"
