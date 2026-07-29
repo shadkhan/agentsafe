@@ -198,10 +198,10 @@ Chrome notes that all visibility modes still go through review, so use Private o
 | Store icon generated | Verified |
 | Screenshot generated | Verified |
 | Small promo tile generated | Verified |
-| Production ZIP generated | Regenerate after the version bump |
+| Production ZIP generated | Verified for 0.9.0. The ZIP is gitignored and built locally, so rebuild it from a clean tree that matches the pushed commit before uploading |
 | `pnpm verify:clean` passing | Verified |
 | Browser E2E passing against the packaged build | Verified |
-| Privacy policy URL resolves when signed out | Verify after making the repository public |
+| Privacy policy URL resolves when signed out | Verified against `https://raw.githubusercontent.com/shadkhan/agentsafe/main/PRIVACY.md` |
 | CI passing on GitHub | Verify after pushing |
 | Screenshot reflects the current side panel | Captured from the running extension by `pnpm capture:screenshot`; recapture after UI changes |
 
