@@ -179,6 +179,6 @@ Start here for deeper detail:
 | `docs/WORKER_SCANNING_ARCHITECTURE.md` | Worker-based scan architecture |
 | `docs/SCAN_LIFECYCLE.md` | Scan lifecycle and status model |
 | `docs/threat-model/THREAT_MODEL.md` | Threat model |
-| `docs/privacy/PRIVACY.md` | Privacy posture |
+| `PRIVACY.md` | Privacy posture |
 | `docs/chrome-store/CHROME_STORE_LISTING.md` | Chrome Store listing copy |
 | `docs/chrome-store/PERMISSION_JUSTIFICATION.md` | Permission rationale |

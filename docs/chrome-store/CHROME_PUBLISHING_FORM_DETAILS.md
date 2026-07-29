@@ -70,7 +70,7 @@ pnpm --filter @agentsafe/extension zip
 | Mature content | No |
 | Website / homepage URL | `https://github.com/shadkhan/agentsafe` |
 | Support URL | `https://github.com/shadkhan/agentsafe/issues` |
-| Privacy policy URL | `https://github.com/shadkhan/agentsafe/blob/main/docs/privacy/PRIVACY.md` |
+| Privacy policy URL | `https://github.com/shadkhan/agentsafe/blob/main/PRIVACY.md` |
 
 The privacy policy URL must resolve for a signed-out visitor. Chrome rejects a listing whose policy link 404s, which is what happens if the repository is still private. Confirm the repository is public before submitting, or host the policy elsewhere and use that URL instead.
 
