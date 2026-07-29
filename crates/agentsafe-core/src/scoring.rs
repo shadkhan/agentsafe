@@ -25,6 +25,10 @@ pub fn severity_for_score(score: u32) -> Severity {
     }
 }
 
+/// Mirrors `scoreFinding` in `packages/risk-engine/src/index.ts`; the weights and
+/// thresholds in both must stay identical. Page scans re-score per segment on the
+/// TypeScript side, so this path drives structured (WebMCP) scans and the engine's
+/// own severity output.
 pub fn score_signals(
     signals: SignalCounts,
     visible_to_user: bool,
@@ -61,6 +65,14 @@ pub fn score_signals(
     (score, severity_for_score(score), confidence)
 }
 
+/// Weight applied to every finding after the most severe one, and the ceiling on
+/// their combined contribution. Summing findings linearly made the score a proxy
+/// for finding count: enough informational matches outscored a handful of genuine
+/// high-severity ones. Mirrors `SECONDARY_FINDING_WEIGHT` / `SECONDARY_FINDING_CAP`
+/// in `packages/risk-engine/src/index.ts`; change both together.
+const SECONDARY_FINDING_WEIGHT: f64 = 0.25;
+const SECONDARY_FINDING_CAP: f64 = 30.0;
+
 pub fn summarize_risk(findings: &[Finding]) -> RiskAssessment {
     let mut severity_counts = BTreeMap::from([
         ("informational".to_string(), 0),
@@ -69,7 +81,7 @@ pub fn summarize_risk(findings: &[Finding]) -> RiskAssessment {
         ("high".to_string(), 0),
         ("critical".to_string(), 0),
     ]);
-    let mut weighted = 0.0;
+    let mut weights = Vec::with_capacity(findings.len());
     for finding in findings {
         let key = match finding.severity {
             Severity::Informational => "informational",
@@ -86,10 +98,14 @@ pub fn summarize_risk(findings: &[Finding]) -> RiskAssessment {
             Severity::High => 48.0,
             Severity::Critical => 72.0,
         };
-        weighted += base * finding.confidence;
+        weights.push(base * finding.confidence);
     }
+    weights.sort_by(|left, right| right.total_cmp(left));
+    let peak = weights.first().copied().unwrap_or(0.0);
+    let secondary =
+        (weights.iter().skip(1).sum::<f64>() * SECONDARY_FINDING_WEIGHT).min(SECONDARY_FINDING_CAP);
     RiskAssessment {
-        overall_risk_score: weighted.round().min(100.0) as u32,
+        overall_risk_score: (peak + secondary).round().min(100.0) as u32,
         severity_counts,
     }
 }

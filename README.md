@@ -83,7 +83,7 @@ flowchart TB
 | Local risk scoring | Complete | Uses multi-signal scoring for stronger high-risk classification |
 | Page interaction | Complete | Highlight findings, navigate evidence, and temporarily reveal hidden content |
 | Local export | Complete | Sanitized Markdown and JSON report export |
-| Privacy posture | Complete | No backend, telemetry, remote AI calls, or page-body persistence |
+| Privacy posture | Complete | No backend, telemetry, or remote AI calls; nothing written to disk unless the user exports |
 | Scoped exceptions | Complete | Rule-scoped local exceptions stored in `chrome.storage.local` |
 
 ## Security And Privacy Model
@@ -91,7 +91,7 @@ flowchart TB
 | Principle | Implementation |
 | --- | --- |
 | Local-first | Page content is scanned in the browser extension context |
-| Minimal persistence | Page body content is not stored; settings live in `chrome.storage.local` |
+| Minimal persistence | Settings live in `chrome.storage.local`; the latest per-tab scan result is cached in memory-backed `chrome.storage.session` and cleared when Chrome closes |
 | Explicit action | The extension scans only after the user chooses to scan, highlight, or reveal |
 | No remote code | The production build uses packaged extension assets |
 | No default host access | The manifest avoids broad static host permissions |

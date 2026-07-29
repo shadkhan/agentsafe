@@ -24,6 +24,7 @@ import scanWorkerUrl from "./scan-worker.ts?worker&url";
 
 export * from "./protocol";
 export { explainFinding } from "./finding-explanations";
+export { filterUncorroboratedFindings, mapChunkFindings, mapFinding, type RustChunkFinding } from "./finding-mapping";
 
 export const SCAN_LIMITS: Record<ScanMode, ScanLimitsConfig> = {
   quick: limits(2, 64, 512, 1_500, 1, 250, 12_000, 4_000, 64, 20_000),
@@ -105,6 +106,7 @@ export function createChunks(input: {
       currentSegments.push({
         sourceId: segment.sourceId,
         selector: segment.selector,
+        frameUrl: segment.frameUrl,
         start,
         end: start + piece.length,
         visibleToUser: segment.visibleToUser,
@@ -227,6 +229,9 @@ export async function runWorkerScan(options: ScanCoordinatorOptions): Promise<Sc
     computedStyleInspections: options.extractionMetrics.computedStyleInspections,
     charactersExtracted: options.extractionMetrics.charactersExtracted,
     charactersScanned,
+    framesScanned: options.extractionMetrics.framesScanned,
+    framesDetected: options.extractionMetrics.framesDetected,
+    shadowRootsVisited: options.extractionMetrics.shadowRootsVisited,
     chunksQueued: chunks.length,
     chunksCompleted: Math.max(0, chunks.length - chunksSkipped),
     chunksSkipped,

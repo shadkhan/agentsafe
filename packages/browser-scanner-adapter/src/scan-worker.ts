@@ -1,14 +1,12 @@
 import { scanTextWithRust } from "@agentsafe/scanner-wasm";
-import type { Finding, FindingCategory, RuleSignal, Severity } from "@agentsafe/shared-types";
 import {
-  isRuleSignal,
   SCAN_PROTOCOL_VERSION,
   type ChunkResultPayload,
   type ScanChunkPayload,
   type ScanWorkerMessage,
   type TextChunk
 } from "./protocol";
-import { explainFinding } from "./finding-explanations";
+import { mapChunkFindings } from "./finding-mapping";
 
 let initialized = false;
 let abortedScanId: string | undefined;
@@ -46,11 +44,15 @@ async function handleMessage(message: ScanWorkerMessage) {
       source_id: payload.chunk.chunkId,
       text: payload.chunk.text,
       sensitivity: payload.settings.sensitivity,
+      // Deliberately neutral: a chunk spans many page elements with different
+      // visibility, so engine-side context would score every match in the chunk
+      // as if it shared the visibility of whichever segment happened to set the
+      // chunk label. Severity is assigned per segment in mapChunkFindings.
       context: {
-        visible_to_user: payload.chunk.visibilityCategory === "visible",
+        visible_to_user: true,
         likely_in_extracted_text: true,
-        hidden_signal_count: payload.chunk.visibilityCategory === "hidden" ? 1 : 0,
-        metadata_signal_count: payload.chunk.visibilityCategory === "metadata" || payload.chunk.visibilityCategory === "comment" ? 1 : 0
+        hidden_signal_count: 0,
+        metadata_signal_count: 0
       },
       limits: {
         max_input_bytes: payload.limits.chunkSize + payload.limits.chunkOverlap,
@@ -64,7 +66,11 @@ async function handleMessage(message: ScanWorkerMessage) {
     });
     const out: ChunkResultPayload = {
       chunkId: payload.chunk.chunkId,
-      findings: result.findings.map((finding) => mapFinding(payload.chunk, finding)),
+      findings: mapChunkFindings({
+        chunk: payload.chunk,
+        findings: result.findings,
+        sensitivity: payload.settings.sensitivity
+      }),
       engineVersion: result.engine_version,
       ruleRegistryVersion: result.rule_registry_version,
       charactersScanned: payload.chunk.text.length,
@@ -79,95 +85,6 @@ async function handleMessage(message: ScanWorkerMessage) {
 function validateChunk(chunk: TextChunk) {
   if (!chunk || typeof chunk.text !== "string" || !chunk.chunkId || !Array.isArray(chunk.segments)) throw new Error("Malformed chunk.");
   if (chunk.text.length > 512 * 1024) throw new Error("Chunk exceeds worker hard limit.");
-}
-
-function mapFinding(chunk: TextChunk, rustFinding: {
-  rule_id: string;
-  category: string;
-  severity: string;
-  confidence: number;
-  evidence: { redacted_text: string; char_start?: number };
-  signals: string[];
-}): Finding {
-  const charStart = rustFinding.evidence.char_start ?? 0;
-  const segment = chunk.segments.find((candidate) => charStart >= candidate.start && charStart <= candidate.end) ?? chunk.segments[0];
-  const hiddenSignals = Object.keys(segment?.hiddenReasons ?? {}).map(cssSignal).filter(Boolean) as RuleSignal[];
-  const signals = [...hiddenSignals, ...rustFinding.signals.filter(isRuleSignal)];
-  const category = chooseCategory(rustFinding.category, segment?.visibility ?? chunk.visibilityCategory, signals);
-  const visibleToUser = segment?.visibleToUser ?? chunk.visibilityCategory === "visible";
-  const likelyInExtractedText = segment?.likelyInExtractedText ?? true;
-  const enrichment = explainFinding({
-    ruleId: rustFinding.rule_id,
-    category,
-    severity: rustFinding.severity as Severity,
-    confidence: rustFinding.confidence,
-    visibility: segment?.visibility ?? chunk.visibilityCategory,
-    visibleToUser,
-    likelyInExtractedText,
-    signals: signals.length ? signals : [fallbackSignal(rustFinding.rule_id)],
-    hiddenReasons: segment?.hiddenReasons ?? {}
-  });
-  return {
-    id: stableId(segment?.selector ?? chunk.chunkId, rustFinding.rule_id, rustFinding.evidence.redacted_text, charStart),
-    title: enrichment.title,
-    ruleId: rustFinding.rule_id,
-    category,
-    severity: rustFinding.severity as Severity,
-    confidence: rustFinding.confidence,
-    verdict: enrichment.verdict,
-    selector: segment?.selector ?? chunk.chunkId,
-    evidence: excerpt(rustFinding.evidence.redacted_text),
-    concern: enrichment.concern,
-    possibleImpact: enrichment.possibleImpact,
-    whyItMatters: enrichment.whyItMatters,
-    confidenceReason: enrichment.confidenceReason,
-    falsePositiveGuidance: enrichment.falsePositiveGuidance,
-    explanation: enrichment.explanation,
-    recommendedAction: enrichment.recommendedAction,
-    visibleToUser,
-    likelyInExtractedText,
-    signals: signals.length ? signals : [fallbackSignal(rustFinding.rule_id)],
-    cssProperties: Object.keys(segment?.hiddenReasons ?? {}).length ? segment?.hiddenReasons : undefined
-  };
-}
-
-function chooseCategory(rustCategory: string, visibility: string, signals: RuleSignal[]): FindingCategory {
-  if (signals.includes("base64-instruction") || rustCategory === "encoded-content") return "encoded-content";
-  if (signals.includes("zero-width-unicode") || signals.includes("bidi-control") || rustCategory === "unicode-security") return "unicode-security";
-  if (rustCategory === "exfiltration") return "exfiltration";
-  if (rustCategory === "delimiter") return "delimiter";
-  if (visibility === "metadata") return "metadata";
-  if (visibility === "comment") return "html-comment";
-  if (visibility === "hidden") return "hidden-css";
-  return "instruction-pattern";
-}
-
-function cssSignal(property: string): RuleSignal | undefined {
-  return {
-    display: "display-none",
-    visibility: "visibility-hidden",
-    opacity: "opacity-near-zero",
-    fontSize: "font-size-zero",
-    clip: "clip-hidden",
-    box: "zero-box",
-    position: "offscreen-position",
-    contrast: "low-contrast",
-    ariaHidden: "aria-hidden-instruction"
-  }[property] as RuleSignal | undefined;
-}
-
-function fallbackSignal(ruleId: string): RuleSignal {
-  return isRuleSignal(ruleId) ? ruleId : "instruction-override";
-}
-
-function stableId(selector: string, rule: string, text: string, offset: number) {
-  let hash = 0;
-  for (const char of `${selector}:${rule}:${text}:${offset}`) hash = (hash * 31 + char.charCodeAt(0)) | 0;
-  return `finding-${Math.abs(hash).toString(36)}`;
-}
-
-function excerpt(text: string) {
-  return text.length > 240 ? `${text.slice(0, 237)}...` : text;
 }
 
 function post<T extends ScanWorkerMessage["messageType"], P>(scanId: string, messageType: T, payload: P) {

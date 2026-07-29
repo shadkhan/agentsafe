@@ -26,7 +26,18 @@ export function explainFinding(input: FindingExplanationInput): Enrichment {
     : "Some extraction tools may skip it, but it is still present in the page source.";
   const visibilityReason = `${hiddenContext} ${extractionContext}`;
   const hiddenReasons = Object.keys(input.hiddenReasons);
-  const hasInstruction = input.signals.some((signal) => ["instruction-override", "role-manipulation", "reveal-system-prompt", "tool-use", "data-exfiltration", "delimiter-block"].includes(signal));
+  const hasInstruction = input.signals.some((signal) =>
+    [
+      "instruction-override",
+      "role-manipulation",
+      "reveal-system-prompt",
+      "tool-use",
+      "data-exfiltration",
+      "markdown-image-exfiltration",
+      "url-parameter-exfiltration",
+      "delimiter-block"
+    ].includes(signal)
+  );
   const hasObfuscation = input.signals.some((signal) => ["zero-width-unicode", "bidi-control", "base64-instruction"].includes(signal));
   const verdict = chooseVerdict(input, hasInstruction, hasObfuscation);
 
@@ -58,6 +69,27 @@ export function explainFinding(input: FindingExplanationInput): Enrichment {
       falsePositiveGuidance: "May be benign in an article, documentation, test fixture, or security training page that is clearly discussing prompt injection rather than trying to control an agent.",
       explanation: `The content contains agent-directed wording associated with ${readableRule(input.ruleId)}. ${visibilityReason}`,
       recommendedAction: "Do not copy this text into an agent unchanged. Review the surrounding page context and remove or quarantine it from sanitized exports if it is not part of trusted documentation."
+    };
+  }
+
+  if (input.ruleId === "markdown-image-exfiltration" || input.ruleId === "url-parameter-exfiltration") {
+    const viaImage = input.ruleId === "markdown-image-exfiltration";
+    return {
+      title: viaImage ? "Data-carrying image URL" : "URL parameter that could carry page data",
+      verdict,
+      concern: viaImage
+        ? "A markdown image points at an external URL whose query string is built to carry content."
+        : "A URL carries a parameter named for the kind of data an agent would hold, such as a token, secret, or prompt.",
+      possibleImpact: viaImage
+        ? "Markdown images load without the user clicking anything. If an agent renders this, whatever it appends to the URL is delivered to the URL's owner in the request itself."
+        : "If an agent is persuaded to fill in this parameter, the data leaves in the request, and the page never has to display it.",
+      whyItMatters: `${visibilityReason} Sending data out through a URL an agent fetches is the most common exfiltration route because it needs no form, no click, and no visible change to the page.`,
+      confidenceReason: confidenceText(input, hiddenReasons, true, hasObfuscation),
+      falsePositiveGuidance: viaImage
+        ? "May be benign for badges, analytics pixels, or CDN images that take normal query parameters such as size or cache keys."
+        : "May be benign in API documentation, which routinely shows URLs with token or key parameters as examples.",
+      explanation: `An external URL is shaped to carry data out of the page. ${visibilityReason}`,
+      recommendedAction: "Check where the URL points and what it expects. Do not let an agent fetch or render it, and exclude it from AI-facing exports unless the destination is trusted."
     };
   }
 

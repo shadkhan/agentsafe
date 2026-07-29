@@ -92,7 +92,7 @@ impl Scanner {
 
 pub fn default_registry() -> RuleRegistry {
     RuleRegistry {
-        version: "agentsafe-rules-2026-07-27".to_string(),
+        version: "agentsafe-rules-2026-07-29".to_string(),
         rules: vec![
             regex_rule(
                 "instruction-override",
@@ -129,6 +129,26 @@ pub fn default_registry() -> RuleRegistry {
                 "explanation.data_exfiltration",
                 "action.do_not_copy_sensitive_instruction",
             ),
+            // Markdown images load without a click, which makes them the usual
+            // way page text talks an agent into leaking data: the instruction
+            // tells the model to append what it knows to the image URL.
+            regex_rule(
+                "markdown-image-exfiltration",
+                RuleCategory::Exfiltration,
+                r"!\[[^\]]{0,80}\]\(\s*https?://[^)\s]{0,200}[?&](d|q|data|text|prompt|content|payload|secret|token|key|info|msg|message|note|summary)=",
+                "explanation.markdown_image_exfiltration",
+                "action.do_not_copy_sensitive_instruction",
+            ),
+            // Lower specificity: API documentation legitimately shows URLs with
+            // these parameters, so this rule is corroboration-gated on the
+            // TypeScript side and only stands alone when the text is hidden.
+            regex_rule(
+                "url-parameter-exfiltration",
+                RuleCategory::Exfiltration,
+                r"https?://[^\s)]{0,200}[?&](data|payload|secret|token|api[_-]?key|password|passwd|cookie|session|prompt|clipboard)=",
+                "explanation.url_parameter_exfiltration",
+                "action.do_not_copy_sensitive_instruction",
+            ),
             regex_rule(
                 "delimiter-block",
                 RuleCategory::Delimiter,
@@ -153,6 +173,12 @@ pub fn default_registry() -> RuleRegistry {
                 "bidi-control",
                 RuleCategory::UnicodeSecurity,
                 "explanation.bidi_control",
+                "action.normalize_unicode",
+            ),
+            unicode_rule(
+                "tag-block-unicode",
+                RuleCategory::UnicodeSecurity,
+                "explanation.tag_block_unicode",
                 "action.normalize_unicode",
             ),
             encoded_rule(

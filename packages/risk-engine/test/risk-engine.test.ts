@@ -47,21 +47,26 @@ describe("risk scoring", () => {
     expect(high.score).toBeGreaterThan(low.score);
   });
 
+  it("ranks a few real findings above a pile of informational noise", () => {
+    const noise = Array.from({ length: 40 }, (_, index) =>
+      finding("informational", "instruction-pattern", 0.28, `noise-${index}`)
+    );
+    const real = Array.from({ length: 3 }, (_, index) => finding("high", "hidden-css", 0.7, `real-${index}`));
+    expect(summarizeFindings(noise).overallRiskScore).toBeLessThan(summarizeFindings(real).overallRiskScore);
+  });
+
+  it("keeps informational noise out of the medium risk band", () => {
+    const noise = Array.from({ length: 60 }, (_, index) =>
+      finding("informational", "instruction-pattern", 0.28, `noise-${index}`)
+    );
+    expect(summarizeFindings(noise).overallRiskScore).toBeLessThan(35);
+  });
+
+  it("scores a single critical finding as high risk on its own", () => {
+    expect(summarizeFindings([finding("critical", "hidden-css", 0.9)]).overallRiskScore).toBeGreaterThanOrEqual(60);
+  });
+
   it("summarizes findings by severity and category", () => {
-    const finding = (severity: Finding["severity"], category: Finding["category"]): Finding => ({
-      id: `${severity}-${category}`,
-      ruleId: "test",
-      category,
-      severity,
-      confidence: 0.8,
-      selector: "body",
-      evidence: "test",
-      explanation: "test",
-      recommendedAction: "test",
-      visibleToUser: true,
-      likelyInExtractedText: true,
-      signals: []
-    });
     const summary = summarizeFindings([
       finding("medium", "hidden-css"),
       finding("high", "unicode-security"),
@@ -72,6 +77,26 @@ describe("risk scoring", () => {
     expect(summary.suspiciousUnicodeCount).toBe(1);
     expect(summary.instructionPatternCount).toBe(1);
   });
+});
+
+const finding = (
+  severity: Finding["severity"],
+  category: Finding["category"],
+  confidence = 0.8,
+  id = `${severity}-${category}`
+): Finding => ({
+  id,
+  ruleId: "test",
+  category,
+  severity,
+  confidence,
+  selector: "body",
+  evidence: "test",
+  explanation: "test",
+  recommendedAction: "test",
+  visibleToUser: true,
+  likelyInExtractedText: true,
+  signals: []
 });
 
 const lowInput = {

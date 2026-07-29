@@ -32,6 +32,12 @@ export interface ExtractionMetrics {
   computedStyleInspections: number;
   charactersExtracted: number;
   traversalDurationMs: number;
+  /** Embedded frames the extracting document contains, used to report coverage. */
+  iframeCount?: number;
+  shadowRootsVisited?: number;
+  /** Set when merging per-frame extractions in the side panel. */
+  framesScanned?: number;
+  framesDetected?: number;
   partialReasons: Array<{
     code: ScanStatus;
     explanation: string;
@@ -67,6 +73,7 @@ export interface TextChunk {
   segments: Array<{
     sourceId: string;
     selector: string;
+    frameUrl: string;
     start: number;
     end: number;
     visibleToUser: boolean;
@@ -175,6 +182,7 @@ export function isRuleSignal(value: string): value is RuleSignal {
     "low-contrast",
     "zero-width-unicode",
     "bidi-control",
+    "tag-block-unicode",
     "suspicious-comment",
     "suspicious-meta",
     "aria-hidden-instruction",
@@ -184,6 +192,8 @@ export function isRuleSignal(value: string): value is RuleSignal {
     "reveal-system-prompt",
     "delimiter-block",
     "tool-use",
-    "data-exfiltration"
+    "data-exfiltration",
+    "markdown-image-exfiltration",
+    "url-parameter-exfiltration"
   ].includes(value);
 }

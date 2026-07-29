@@ -18,6 +18,10 @@ export function severityForScore(score: number): Severity {
   return "informational";
 }
 
+/**
+ * Mirrors `score_signals` in `crates/agentsafe-core/src/scoring.rs`; the weights
+ * and thresholds in both must stay identical.
+ */
 export function scoreFinding(input: {
   hiddenSignals: number;
   instructionSignals: number;
@@ -55,20 +59,35 @@ export function scoreFinding(input: {
   return { score, severity: severityForScore(score), confidence: Number(confidence.toFixed(2)) };
 }
 
+/**
+ * Weight applied to every finding after the most severe one, and the ceiling on
+ * their combined contribution. Summing findings linearly made the page score a
+ * proxy for finding count: enough informational matches outscored a handful of
+ * genuine high-severity ones. The worst finding now sets the floor, and the rest
+ * can only add a bounded amount on top.
+ */
+const SECONDARY_FINDING_WEIGHT = 0.25;
+const SECONDARY_FINDING_CAP = 30;
+
 export function summarizeFindings(findings: Finding[]): ScanSummary {
   const severityCounts = severityOrder.reduce(
     (acc, severity) => ({ ...acc, [severity]: 0 }),
     {} as Record<Severity, number>
   );
 
-  let weightedScore = 0;
-  for (const finding of findings) {
-    severityCounts[finding.severity] += 1;
-    weightedScore += severityBase[finding.severity] * finding.confidence;
-  }
+  for (const finding of findings) severityCounts[finding.severity] += 1;
+
+  const weights = findings
+    .map((finding) => severityBase[finding.severity] * finding.confidence)
+    .sort((left, right) => right - left);
+  const peak = weights[0] ?? 0;
+  const secondary = Math.min(
+    SECONDARY_FINDING_CAP,
+    weights.slice(1).reduce((total, weight) => total + weight, 0) * SECONDARY_FINDING_WEIGHT
+  );
 
   return {
-    overallRiskScore: Math.min(100, Math.round(weightedScore)),
+    overallRiskScore: Math.min(100, Math.round(peak + secondary)),
     severityCounts,
     hiddenTextCount: findings.filter((f) => f.category === "hidden-css" || f.category === "accessibility").length,
     suspiciousUnicodeCount: findings.filter((f) => f.category === "unicode-security").length,

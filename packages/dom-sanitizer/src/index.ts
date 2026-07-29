@@ -46,7 +46,9 @@ function shouldRemove(finding: Finding): boolean {
 }
 
 function safeQuery(document: Document, selector: string): Element | null {
-  if (selector === "comment()") return null;
+  // Comment nodes and shadow-DOM paths have no equivalent in the cloned light DOM
+  // this sanitizer walks: cloneNode does not copy shadow roots.
+  if (selector === "comment()" || selector.includes(" >>> ")) return null;
   try {
     return document.querySelector(selector);
   } catch {
@@ -57,7 +59,9 @@ function safeQuery(document: Document, selector: string): Element | null {
 function normalizeUnicodeText(element: Element): void {
   for (const child of Array.from(element.childNodes)) {
     if (child.nodeType === Node.TEXT_NODE && child.textContent) {
-      child.textContent = child.textContent.replace(/[\u200B-\u200D\uFEFF\u202A-\u202E\u2066-\u2069]/g, "");
+      // Zero-width, bidi controls, and the Unicode Tags block, which renders as
+      // nothing but can carry a full ASCII instruction into a model's context.
+      child.textContent = child.textContent.replace(/[\u200B-\u200D\uFEFF\u202A-\u202E\u2066-\u2069\u{E0000}-\u{E007F}]/gu, "");
     }
   }
 }

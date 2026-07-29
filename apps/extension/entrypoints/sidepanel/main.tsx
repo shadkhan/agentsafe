@@ -1,9 +1,18 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { AlertTriangle, ChevronLeft, ChevronRight, Clipboard, Download, Eye, RotateCcw, ScanLine, ShieldCheck, Square, Trash2 } from "lucide-react";
-import { runWorkerScan, type PageExtractionResult } from "@agentsafe/browser-scanner-adapter";
+import { AlertTriangle, BellOff, ChevronLeft, ChevronRight, Clipboard, Download, Eye, RotateCcw, ScanLine, ShieldCheck, Square, Trash2 } from "lucide-react";
+import { runWorkerScan, SCAN_LIMITS, type PageExtractionResult } from "@agentsafe/browser-scanner-adapter";
 import { summarizeFindings } from "@agentsafe/risk-engine";
-import { defaultSettings, type Finding, type SanitizedExport, type ScanProgress, type ScanResult, type ScannerSettings, type Severity } from "@agentsafe/shared-types";
+import {
+  defaultSettings,
+  type Finding,
+  type SanitizedExport,
+  type ScanProgress,
+  type ScanResult,
+  type ScannerSettings,
+  type ScopedException,
+  type Severity
+} from "@agentsafe/shared-types";
 import { createSanitizedExport } from "@agentsafe/markdown-exporter";
 import { analyzeWebMcpTools, exportWebMcpReportJson, exportWebMcpReportMarkdown, type WebMcpSecurityReport } from "@agentsafe/webmcp-security";
 import "./style.css";
@@ -116,12 +125,14 @@ function App() {
       activeScan.current = { scanId, controller, tabId: tabInfo.id! };
       setProgress(initialScanProgress(scanId, settings.scanMode, "extracting_page_text", 6));
       setStatus("Extracting page text locally...");
-      const extractionResult = await executeWithPageAccess(tabInfo, collectTextSegmentsForAgentSafe, [scanId, settings.scanMode, settings.phraseAllowlist, settings.includeAriaHidden], { requestPermission: source === "manual" });
+      const extractionResult = await executeWithPageAccess(
+        tabInfo,
+        collectTextSegmentsForAgentSafe,
+        [scanId, settings.scanMode, settings.phraseAllowlist, settings.includeAriaHidden],
+        { requestPermission: source === "manual", allFrames: true }
+      );
       if (controller.signal.aborted) throw new Error("Scan cancelled.");
-      const extractionError = (extractionResult[0] as chrome.scripting.InjectionResult & { error?: { message?: string } } | undefined)?.error;
-      if (extractionError) throw new Error(extractionError.message ?? "Could not extract text from the active page.");
-      const extraction = extractionResult[0]?.result as PageExtractionResult | undefined;
-      if (!extraction) throw new Error("Could not extract text from the active page.");
+      const extraction = mergeFrameExtractions(extractionResult, SCAN_LIMITS[settings.scanMode].maxTotalCharacters);
       setProgress({
         ...initialScanProgress(scanId, settings.scanMode, "queueing_worker_chunks", 10),
         nodesVisited: extraction.metrics.nodesVisited,
@@ -208,7 +219,12 @@ function App() {
     scan.controller.abort();
     setIsScanning(false);
     setStatus("Cancelling scan...");
-    void chrome.tabs.get(scan.tabId).then((tabInfo) => executeWithPageAccess(tabInfo, cancelTextExtractionForAgentSafe, [scan.scanId], { requestPermission: false })).catch(() => undefined);
+    void chrome.tabs
+      .get(scan.tabId)
+      .then((tabInfo) =>
+        executeWithPageAccess(tabInfo, cancelTextExtractionForAgentSafe, [scan.scanId], { requestPermission: false, allFrames: true })
+      )
+      .catch(() => undefined);
   }
 
   async function runAutoScanForTab(tabId: number) {
@@ -256,26 +272,90 @@ function App() {
     if (activeScan.current?.tabId !== tabInfo.id) setStatus(`Loaded ${cached.source} scan from ${new Date(cached.scannedAt).toLocaleTimeString()}: ${cached.scan.findings.length} findings.`);
   }
 
+  // These run against the page, so they can fail for reasons the user needs to
+  // see: a revoked permission, a browser-internal tab, or a page that navigated
+  // away. Reporting beats an unhandled rejection and a button that does nothing.
+  async function withPageAction(action: string, run: () => Promise<unknown>) {
+    try {
+      await run();
+    } catch (error) {
+      setStatus(`Could not ${action}. ${formatScanError(error)}`);
+    }
+  }
+
   async function highlight(finding: Finding | undefined) {
     if (!finding) return;
-    const tabInfo = await currentTab();
-    await executeWithPageAccess(tabInfo, highlightAgentSafeFinding, [finding.selector]);
+    await withPageAction("highlight this finding", async () =>
+      executeWithPageAccess(await currentTab(), applyAgentSafePageAction, ["highlight", finding.selector, finding.frameUrl ?? ""] as const, {
+        allFrames: true
+      })
+    );
   }
 
   async function reveal(finding: Finding | undefined) {
     if (!finding) return;
-    const tabInfo = await currentTab();
-    await executeWithPageAccess(tabInfo, revealAgentSafeFinding, [finding.selector]);
+    await withPageAction("reveal this content", async () =>
+      executeWithPageAccess(await currentTab(), applyAgentSafePageAction, ["reveal", finding.selector, finding.frameUrl ?? ""] as const, {
+        allFrames: true
+      })
+    );
   }
 
   async function clear() {
-    const tabInfo = await currentTab();
-    await executeWithPageAccess(tabInfo, clearAgentSafeHighlights);
+    await withPageAction("clear highlights", async () =>
+      executeWithPageAccess(await currentTab(), applyAgentSafePageAction, ["clear", "", ""] as const, { allFrames: true })
+    );
   }
 
   function next(delta: number) {
     if (findings.length === 0) return;
     setActiveFinding((current) => (current + delta + findings.length) % findings.length);
+  }
+
+  /**
+   * Writes a rule-scoped exception for the current host and applies it to the
+   * result already on screen. Editing the exceptions JSON by hand and rescanning
+   * was the only way to silence a false positive, which is too much friction for
+   * the thing users need most often.
+   */
+  async function ignoreRuleForSite(finding: Finding) {
+    const host = hostnameForAgentSafe(scan?.context.url ?? "");
+    if (!host) {
+      setStatus("This page has no host name to scope an exception to.");
+      return;
+    }
+    const exception: ScopedException = {
+      id: crypto.randomUUID(),
+      scopeType: "exact-hostname",
+      scopeValue: host,
+      ruleIds: [finding.ruleId],
+      enabled: true,
+      createdAt: new Date().toISOString(),
+      source: "user",
+      note: `Ignored ${finding.ruleId} on ${host} from a finding.`
+    };
+    const nextSettings: ScannerSettings = { ...settings, scopedExceptions: [...settings.scopedExceptions, exception] };
+    setSettings(nextSettings);
+    if (!scan) return;
+
+    const remaining = scan.findings.filter((candidate) => candidate.ruleId !== finding.ruleId);
+    const nextScan: ScanResult = {
+      ...scan,
+      findings: remaining,
+      summary: summarizeFindings(remaining),
+      context: { ...scan.context, settings: nextSettings }
+    };
+    const nextReport = report ? { ...report, findings: remaining } : null;
+    setScan(nextScan);
+    setReport(nextReport);
+    setActiveFinding(0);
+    setStatus(`Ignoring ${finding.ruleId} on ${host}. ${remaining.length} findings remain. Undo in Settings.`);
+
+    const tabId = visibleTabId.current;
+    if (tabId !== null && nextReport) {
+      await saveCachedResult(tabId, nextScan, nextReport, "manual", webMcpReport ?? undefined);
+      await updateBadge(tabId, nextScan, nextSettings.badgeEnabled);
+    }
   }
 
   return (
@@ -298,8 +378,20 @@ function App() {
       <ScanControls isScanning={isScanning} mode={settings.scanMode} status={status} progress={progress} onScan={() => runScan("manual")} onCancel={cancelScan} />
 
       {tab === "summary" && <Summary scan={scan} />}
-      {tab === "findings" && <Findings findings={findings} selected={selected} activeFinding={activeFinding} next={next} highlight={highlight} reveal={reveal} clear={clear} />}
-      {tab === "hidden" && <FindingList title="Hidden Content" findings={hiddenFindings} onHighlight={highlight} onReveal={reveal} />}
+      {tab === "findings" && (
+        <Findings
+          findings={findings}
+          selected={selected}
+          activeFinding={activeFinding}
+          next={next}
+          select={setActiveFinding}
+          highlight={highlight}
+          reveal={reveal}
+          clear={clear}
+          onIgnoreRule={ignoreRuleForSite}
+        />
+      )}
+      {tab === "hidden" && <FindingList title="Hidden Content" findings={hiddenFindings} onHighlight={highlight} onReveal={reveal} onIgnoreRule={ignoreRuleForSite} />}
       {tab === "webmcp" && <WebMcpSecurity report={webMcpReport} enabled={settings.experimentalWebMcpSecurity} />}
       {tab === "sanitized" && <Sanitized report={report} />}
       {tab === "export" && <Export report={report} scan={scan} />}
@@ -397,6 +489,10 @@ function Summary({ scan }: { scan: ScanResult | null }) {
         <div className={`status ${metadata.status.startsWith("partial") ? "warning" : ""}`}>
           <strong>{scanStatusText(metadata.status)}</strong>
           <p>{metadata.charactersScanned} characters scanned across {metadata.chunksCompleted}/{metadata.chunksQueued} chunks. Worker restarts: {metadata.workerRestartCount}.</p>
+          {(metadata.framesDetected ?? 1) > 1 && (
+            <p>Frames scanned: {metadata.framesScanned ?? 1} of {metadata.framesDetected}.</p>
+          )}
+          {(metadata.shadowRootsVisited ?? 0) > 0 && <p>Shadow roots inspected: {metadata.shadowRootsVisited}.</p>}
           {metadata.partialReasons.map((reason) => (
             <p key={`${reason.code}:${reason.source ?? reason.phase}`}><b>{reason.code}:</b> {reason.explanation}</p>
           ))}
@@ -407,17 +503,53 @@ function Summary({ scan }: { scan: ScanResult | null }) {
   );
 }
 
+/** Groups findings by rule, preserving scan order and the index of each occurrence. */
+function groupFindingsByRule(findings: Finding[]): Array<{ ruleId: string; title: string; indexes: number[]; findings: Finding[] }> {
+  const groups = new Map<string, { ruleId: string; title: string; indexes: number[]; findings: Finding[] }>();
+  findings.forEach((finding, index) => {
+    const group = groups.get(finding.ruleId) ?? {
+      ruleId: finding.ruleId,
+      title: finding.title ?? finding.ruleId,
+      indexes: [],
+      findings: []
+    };
+    group.indexes.push(index);
+    group.findings.push(finding);
+    groups.set(finding.ruleId, group);
+  });
+  return [...groups.values()];
+}
+
 function Findings(props: {
   findings: Finding[];
   selected?: Finding;
   activeFinding: number;
   next(delta: number): void;
+  select(index: number): void;
   highlight(finding?: Finding): void;
   reveal(finding?: Finding): void;
   clear(): void;
+  onIgnoreRule(finding: Finding): void;
 }) {
+  const groups = groupFindingsByRule(props.findings);
   return (
     <section>
+      {groups.length > 1 && (
+        // A page can repeat one rule dozens of times. Paging through every card to
+        // learn there are only three distinct problems is the slow way to triage.
+        <div className="rule-chips">
+          {groups.map((group) => (
+            <button
+              key={group.ruleId}
+              className={props.selected?.ruleId === group.ruleId ? "active" : ""}
+              onClick={() => props.select(group.indexes[0] ?? 0)}
+              title={`Jump to the first ${group.ruleId} finding`}
+            >
+              {group.ruleId} <b>{group.findings.length}</b>
+            </button>
+          ))}
+        </div>
+      )}
       <div className="toolbar">
         <button onClick={() => props.next(-1)} title="Previous finding"><ChevronLeft size={16} /></button>
         <span>{props.findings.length ? props.activeFinding + 1 : 0} / {props.findings.length}</span>
@@ -426,30 +558,52 @@ function Findings(props: {
         <button onClick={() => props.reveal(props.selected)} title="Reveal hidden text"><AlertTriangle size={16} /></button>
         <button onClick={props.clear} title="Remove highlights"><Trash2 size={16} /></button>
       </div>
-      {props.selected ? <FindingCard finding={props.selected} /> : <Empty text="No findings yet." />}
+      {props.selected ? <FindingCard finding={props.selected} onIgnoreRule={props.onIgnoreRule} /> : <Empty text="No findings yet." />}
     </section>
   );
 }
 
-function FindingList({ title, findings, onHighlight, onReveal }: { title: string; findings: Finding[]; onHighlight(f: Finding): void; onReveal(f: Finding): void }) {
+function FindingList({
+  title,
+  findings,
+  onHighlight,
+  onReveal,
+  onIgnoreRule
+}: {
+  title: string;
+  findings: Finding[];
+  onHighlight(f: Finding): void;
+  onReveal(f: Finding): void;
+  onIgnoreRule?(f: Finding): void;
+}) {
+  const groups = groupFindingsByRule(findings);
   return (
     <section>
       <h2>{title}</h2>
       {findings.length === 0 && <Empty text="No matching findings." />}
-      {findings.map((finding) => (
-        <div className="finding" key={finding.id}>
-          <FindingCard finding={finding} />
-          <div className="toolbar">
-            <button onClick={() => onHighlight(finding)} title="Highlight"><Eye size={16} /></button>
-            <button onClick={() => onReveal(finding)} title="Reveal"><AlertTriangle size={16} /></button>
-          </div>
+      {groups.map((group) => (
+        <div className="finding-group" key={group.ruleId}>
+          {group.findings.length > 1 && (
+            <p className="group-head">
+              <b>{group.ruleId}</b> - {group.findings.length} occurrences
+            </p>
+          )}
+          {group.findings.map((finding) => (
+            <div className="finding" key={finding.id}>
+              <FindingCard finding={finding} onIgnoreRule={onIgnoreRule} />
+              <div className="toolbar">
+                <button onClick={() => onHighlight(finding)} title="Highlight"><Eye size={16} /></button>
+                <button onClick={() => onReveal(finding)} title="Reveal"><AlertTriangle size={16} /></button>
+              </div>
+            </div>
+          ))}
         </div>
       ))}
     </section>
   );
 }
 
-function FindingCard({ finding }: { finding: Finding }) {
+function FindingCard({ finding, onIgnoreRule }: { finding: Finding; onIgnoreRule?(finding: Finding): void }) {
   return (
     <article className={`finding ${finding.severity}`}>
       <div className="finding-head">
@@ -458,6 +612,7 @@ function FindingCard({ finding }: { finding: Finding }) {
       </div>
       <p><b>Rule:</b> {finding.ruleId}</p>
       <p><b>Selector:</b> {finding.selector}</p>
+      {finding.frameUrl && <p><b>Frame:</b> {finding.frameUrl}</p>}
       <p><b>Evidence:</b> {finding.evidence}</p>
       {finding.decodedEvidence && <p><b>Decoded:</b> {finding.decodedEvidence}</p>}
       <p><b>Security Concern:</b> {finding.concern ?? finding.explanation}</p>
@@ -468,6 +623,15 @@ function FindingCard({ finding }: { finding: Finding }) {
       <p><b>Recommended Action:</b> {finding.recommendedAction}</p>
       <p><b>Visible:</b> {finding.visibleToUser ? "yes" : "no"} - <b>Likely extracted:</b> {finding.likelyInExtractedText ? "yes" : "no"}</p>
       {finding.cssProperties && <pre>{JSON.stringify(finding.cssProperties, null, 2)}</pre>}
+      {onIgnoreRule && (
+        <button
+          className="ignore-rule"
+          onClick={() => onIgnoreRule(finding)}
+          title={`Stop reporting ${finding.ruleId} on this site. Other rules keep running.`}
+        >
+          <BellOff size={14} /> Ignore this rule on this site
+        </button>
+      )}
     </article>
   );
 }
@@ -648,6 +812,30 @@ function Settings({ settings, setSettings }: { settings: ScannerSettings; setSet
       </div>
       <label title="Domains listed here are skipped by the scanner. Add one domain per line, such as example.com.">Domain allowlist<textarea value={settings.domainAllowlist.join("\n")} onChange={(event) => setSettings({ ...settings, domainAllowlist: event.target.value.split(/\r?\n/).filter(Boolean) })} /></label>
       <label title="Phrases listed here are ignored when matching findings. Add one phrase per line.">Phrase allowlist<textarea value={settings.phraseAllowlist.join("\n")} onChange={(event) => setSettings({ ...settings, phraseAllowlist: event.target.value.split(/\r?\n/).filter(Boolean) })} /></label>
+      {settings.scopedExceptions.length > 0 && (
+        <div className="exception-list">
+          <h2>Ignored rules</h2>
+          {settings.scopedExceptions.map((exception) => (
+            <div className="exception-row" key={exception.id}>
+              <span>
+                <b>{exception.ruleIds.join(", ") || "all rules"}</b> on {exception.scopeValue}
+                <small> ({exception.scopeType})</small>
+              </span>
+              <button
+                onClick={() =>
+                  setSettings({
+                    ...settings,
+                    scopedExceptions: settings.scopedExceptions.filter((candidate) => candidate.id !== exception.id)
+                  })
+                }
+                title="Stop ignoring this rule. Rescan to see its findings again."
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       <label title="Scoped exceptions are local JSON rules. Prefer rule-specific exceptions over broad domain skips.">Scoped exceptions<textarea value={exceptionsJson} onChange={(event) => {
         try {
           const parsed = JSON.parse(event.target.value);
@@ -687,25 +875,94 @@ async function executeWithPageAccess<Args extends unknown[], Result>(
   tabInfo: chrome.tabs.Tab,
   func: (...args: Args) => Result,
   args?: Args,
-  options: { requestPermission?: boolean } = { requestPermission: true }
+  options: { requestPermission?: boolean; allFrames?: boolean } = { requestPermission: true }
 ): Promise<chrome.scripting.InjectionResult[]> {
   if (!tabInfo.id) throw new Error("No active tab available.");
+  const target: chrome.scripting.InjectionTarget = { tabId: tabInfo.id, allFrames: options.allFrames ?? false };
   try {
-    return await chrome.scripting.executeScript({
-      target: { tabId: tabInfo.id },
-      func,
-      args
-    });
+    return await chrome.scripting.executeScript({ target, func, args });
   } catch (error) {
     if (!isHostPermissionError(error)) throw error;
     if (!options.requestPermission) throw new Error(accessHelpForUrl(tabInfo.url));
     await ensurePageHostAccess(tabInfo.url, true);
-    return chrome.scripting.executeScript({
-      target: { tabId: tabInfo.id },
-      func,
-      args
+    return chrome.scripting.executeScript({ target, func, args });
+  }
+}
+
+/**
+ * Combines the per-frame extractions into one result.
+ *
+ * Chrome injects into every frame it has access to and silently omits the rest,
+ * so cross-origin frames the user has not granted are simply missing. Comparing
+ * the frames that answered against the frame elements they reported lets the scan
+ * say how much of the page it actually covered. Segment ids are re-prefixed per
+ * frame because each frame numbers its own from zero, and finding corroboration
+ * groups by that id.
+ */
+function mergeFrameExtractions(results: chrome.scripting.InjectionResult[], maxCharacters: number): PageExtractionResult {
+  const frames = results
+    .map((entry) => ({ frameId: entry.frameId ?? 0, result: entry.result as PageExtractionResult | undefined }))
+    .filter((entry): entry is { frameId: number; result: PageExtractionResult } => Boolean(entry.result?.segments));
+  const main = frames.find((entry) => entry.frameId === 0) ?? frames[0];
+  if (!main) throw new Error("Could not extract text from the active page.");
+  const merged: PageExtractionResult = {
+    scanId: main.result.scanId,
+    pageUrl: main.result.pageUrl,
+    pageTitle: main.result.pageTitle,
+    segments: [],
+    metrics: {
+      nodesVisited: 0,
+      textNodesVisited: 0,
+      candidateHiddenElements: 0,
+      computedStyleInspections: 0,
+      charactersExtracted: 0,
+      traversalDurationMs: 0,
+      shadowRootsVisited: 0,
+      partialReasons: []
+    }
+  };
+
+  let frameElements = 0;
+  let truncated = false;
+  for (const frame of frames) {
+    const metrics = frame.result.metrics;
+    merged.metrics.nodesVisited += metrics.nodesVisited;
+    merged.metrics.textNodesVisited += metrics.textNodesVisited;
+    merged.metrics.candidateHiddenElements += metrics.candidateHiddenElements;
+    merged.metrics.computedStyleInspections += metrics.computedStyleInspections;
+    merged.metrics.traversalDurationMs = Math.max(merged.metrics.traversalDurationMs, metrics.traversalDurationMs);
+    merged.metrics.shadowRootsVisited = (merged.metrics.shadowRootsVisited ?? 0) + (metrics.shadowRootsVisited ?? 0);
+    merged.metrics.partialReasons.push(...metrics.partialReasons);
+    frameElements += metrics.iframeCount ?? 0;
+
+    for (const segment of frame.result.segments) {
+      if (merged.metrics.charactersExtracted + segment.text.length > maxCharacters) {
+        truncated = true;
+        break;
+      }
+      merged.segments.push({ ...segment, sourceId: `f${frame.frameId}:${segment.sourceId}` });
+      merged.metrics.charactersExtracted += segment.text.length;
+    }
+  }
+
+  merged.metrics.framesScanned = frames.length;
+  merged.metrics.framesDetected = Math.max(frames.length, frameElements + 1);
+  if (truncated) {
+    merged.metrics.partialReasons.push({
+      code: "partial_size_limit",
+      explanation: "Combined frame content reached the configured character limit; later frames were not scanned.",
+      phase: "extracting_text",
+      workCompleted: merged.metrics.charactersExtracted
     });
   }
+  if (merged.metrics.framesScanned < merged.metrics.framesDetected) {
+    merged.metrics.partialReasons.push({
+      code: "partial_node_limit",
+      explanation: `Scanned ${merged.metrics.framesScanned} of ${merged.metrics.framesDetected} frames. Chrome withholds frames whose origin has not been granted, so embedded content from other sites was not inspected.`,
+      phase: "extracting_text"
+    });
+  }
+  return merged;
 }
 
 async function ensurePageHostAccess(url: string | undefined, requestPermission: boolean): Promise<void> {
@@ -797,6 +1054,14 @@ function scanStatusText(status: string) {
   return "Scan completed";
 }
 
+function hostnameForAgentSafe(url: string): string {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
 function isDomainAllowedForAgentSafe(url: string, allowlist: string[]): boolean {
   if (!url || allowlist.length === 0) return false;
   try {
@@ -843,6 +1108,15 @@ async function collectTextSegmentsForAgentSafe(scanId: string, mode: "quick" | "
   let computedStyleInspections = 0;
   let charactersExtracted = 0;
   let nodeCounter = 0;
+  let shadowRootsVisited = 0;
+  let urlSegments = 0;
+  const urlAttributeForAgentSafe = (element: Element): string | null => {
+    const tag = element.tagName.toLowerCase();
+    if (tag === "a" || tag === "area") return element.getAttribute("href");
+    if (tag === "img" || tag === "source" || tag === "iframe" || tag === "embed") return element.getAttribute("src");
+    if (tag === "form") return element.getAttribute("action");
+    return null;
+  };
   const cancelled = () => (globalThis as { __agentsafeCancelledScanId?: string }).__agentsafeCancelledScanId === scanId;
   const pause = () => new Promise((resolve) => setTimeout(resolve, 0));
   const selectorForAgentSafe = (element: Element): string => {
@@ -935,73 +1209,137 @@ async function collectTextSegmentsForAgentSafe(scanId: string, mode: "quick" | "
     });
   }
 
-  const walker = document.createTreeWalker(document.body ?? document.documentElement, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_COMMENT);
-  let node: Node | null;
-  while ((node = walker.nextNode())) {
-    if (cancelled()) {
-      partialReasons.push({ code: "cancelled", explanation: "DOM traversal cancelled by user.", phase: "traversing_dom", workCompleted: nodesVisited });
-      break;
-    }
-    nodesVisited += 1;
-    if (nodesVisited > limits.nodes) {
-      partialReasons.push({ code: "partial_node_limit", explanation: "DOM node limit reached.", phase: "traversing_dom", workCompleted: nodesVisited });
-      break;
-    }
-    if (node.nodeType === Node.COMMENT_NODE) {
-      const text = (node as Comment).data.trim();
-      if (text) pushSegment({
-        sourceId: `comment:${nodeCounter++}`,
-        nodeId: `comment:${nodeCounter}`,
-        selector: "comment()",
-        frameUrl: location.href,
-        visibility: "comment",
-        tagName: "#comment",
-        text,
-        textOffset: 0,
-        sourceCharCount: text.length,
-        hiddenReasons: { comment: "HTML comment" },
-        visibleToUser: false,
-        likelyInExtractedText: false
-      });
-    } else {
-      textNodesVisited += 1;
-      if (textNodesVisited > limits.textNodes) {
-        partialReasons.push({ code: "partial_node_limit", explanation: "Text-node limit reached.", phase: "extracting_text", workCompleted: textNodesVisited });
+  // Open shadow roots are walked as additional roots. Their content is invisible
+  // to a document-level TreeWalker but is still read by extraction tooling, so it
+  // is exactly the kind of surface AgentSafe exists to inspect. Closed roots stay
+  // unreachable by design. Selectors inside a shadow root are recorded relative to
+  // that root and joined to the host with " >>> ", because document.querySelector
+  // cannot cross the boundary.
+  const roots: Array<{ root: Node; hostPath: string }> = [{ root: document.body ?? document.documentElement, hostPath: "" }];
+  const joinShadowPath = (hostPath: string, selector: string) => (hostPath ? `${hostPath} >>> ${selector}` : selector);
+  let stopped = false;
+
+  while (roots.length > 0 && !stopped) {
+    const current = roots.shift()!;
+    const walker = document.createTreeWalker(current.root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_COMMENT | NodeFilter.SHOW_ELEMENT);
+    let node: Node | null;
+    while ((node = walker.nextNode())) {
+      if (cancelled()) {
+        partialReasons.push({ code: "cancelled", explanation: "DOM traversal cancelled by user.", phase: "traversing_dom", workCompleted: nodesVisited });
+        stopped = true;
         break;
       }
-      const raw = node.textContent ?? "";
-      const text = raw.replace(/\s+/g, " ").trim();
-      const element = node.parentElement;
-      if (!text || !element || element.closest("script,style")) continue;
-      const cheap = cheapHiddenReasonsForAgentSafe(element);
-      let hiddenReasons = cheap;
-      if (Object.keys(cheap).length > 0 || element.getBoundingClientRect().width === 0 || element.getBoundingClientRect().height === 0) {
-        candidateHiddenElements += 1;
-        computedStyleInspections += 1;
-        hiddenReasons = { ...cheap, ...computedHiddenReasonsForAgentSafe(element) };
+      nodesVisited += 1;
+      if (nodesVisited > limits.nodes) {
+        partialReasons.push({ code: "partial_node_limit", explanation: "DOM node limit reached.", phase: "traversing_dom", workCompleted: nodesVisited });
+        stopped = true;
+        break;
       }
-      const visibility = Object.keys(hiddenReasons).length ? "hidden" : "visible";
-      pushSegment({
-        sourceId: `text:${nodeCounter++}`,
-        nodeId: `text:${nodeCounter}`,
-        selector: selectorForAgentSafe(element),
-        frameUrl: location.href,
-        visibility,
-        tagName: element.tagName.toLowerCase(),
-        text,
-        textOffset: 0,
-        sourceCharCount: raw.length,
-        hiddenReasons,
-        visibleToUser: visibility === "visible",
-        likelyInExtractedText: element.closest("noscript,template") === null
-      });
-    }
-    if (nodesVisited % 250 === 0) await pause();
-    if (charactersExtracted >= limits.chars) {
-      partialReasons.push({ code: "partial_size_limit", explanation: `Configured ${mode} character limit reached.`, phase: "extracting_text", workCompleted: charactersExtracted });
-      break;
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const host = node as Element;
+        if (host.shadowRoot) {
+          shadowRootsVisited += 1;
+          roots.push({ root: host.shadowRoot, hostPath: joinShadowPath(current.hostPath, selectorForAgentSafe(host)) });
+        }
+        // Link and image URLs never appear in text nodes, so a data-carrying URL
+        // was previously invisible to every rule. Only URLs with a query string
+        // are collected: those are the ones that can carry anything out.
+        const rawUrl = urlAttributeForAgentSafe(host);
+        if (rawUrl && urlSegments < 200) {
+          let resolved = "";
+          try {
+            const parsed = new URL(rawUrl, location.href);
+            if (parsed.protocol === "http:" || parsed.protocol === "https:") resolved = parsed.href;
+          } catch {
+            resolved = "";
+          }
+          if (resolved && resolved.includes("?")) {
+            urlSegments += 1;
+            const cheap = cheapHiddenReasonsForAgentSafe(host);
+            const hiddenReasons: Record<string, string> =
+              Object.keys(cheap).length > 0 ? { ...cheap, ...computedHiddenReasonsForAgentSafe(host) } : { ...cheap };
+            // The text heuristics look for elements with no box around some text,
+            // which never matches a tracking pixel: it has a box, just a tiny one,
+            // and no text at all. Size is the signal that a media element is not
+            // there to be seen.
+            const rect = host.getBoundingClientRect();
+            if (rect.width <= 4 || rect.height <= 4) hiddenReasons.box = `${rect.width}x${rect.height}`;
+            const visibility = Object.keys(hiddenReasons).length ? "hidden" : "visible";
+            pushSegment({
+              sourceId: `url:${nodeCounter++}`,
+              nodeId: `url:${nodeCounter}`,
+              selector: joinShadowPath(current.hostPath, selectorForAgentSafe(host)),
+              frameUrl: location.href,
+              visibility,
+              tagName: host.tagName.toLowerCase(),
+              text: resolved,
+              textOffset: 0,
+              sourceCharCount: resolved.length,
+              hiddenReasons,
+              visibleToUser: visibility === "visible",
+              likelyInExtractedText: true
+            });
+          }
+        }
+      } else if (node.nodeType === Node.COMMENT_NODE) {
+        const text = (node as Comment).data.trim();
+        if (text) pushSegment({
+          sourceId: `comment:${nodeCounter++}`,
+          nodeId: `comment:${nodeCounter}`,
+          selector: "comment()",
+          frameUrl: location.href,
+          visibility: "comment",
+          tagName: "#comment",
+          text,
+          textOffset: 0,
+          sourceCharCount: text.length,
+          hiddenReasons: { comment: "HTML comment" },
+          visibleToUser: false,
+          likelyInExtractedText: false
+        });
+      } else {
+        textNodesVisited += 1;
+        if (textNodesVisited > limits.textNodes) {
+          partialReasons.push({ code: "partial_node_limit", explanation: "Text-node limit reached.", phase: "extracting_text", workCompleted: textNodesVisited });
+          stopped = true;
+          break;
+        }
+        const raw = node.textContent ?? "";
+        const text = raw.replace(/\s+/g, " ").trim();
+        const element = node.parentElement;
+        if (!text || !element || element.closest("script,style")) continue;
+        const cheap = cheapHiddenReasonsForAgentSafe(element);
+        let hiddenReasons = cheap;
+        if (Object.keys(cheap).length > 0 || element.getBoundingClientRect().width === 0 || element.getBoundingClientRect().height === 0) {
+          candidateHiddenElements += 1;
+          computedStyleInspections += 1;
+          hiddenReasons = { ...cheap, ...computedHiddenReasonsForAgentSafe(element) };
+        }
+        const visibility = Object.keys(hiddenReasons).length ? "hidden" : "visible";
+        pushSegment({
+          sourceId: `text:${nodeCounter++}`,
+          nodeId: `text:${nodeCounter}`,
+          selector: joinShadowPath(current.hostPath, selectorForAgentSafe(element)),
+          frameUrl: location.href,
+          visibility,
+          tagName: element.tagName.toLowerCase(),
+          text,
+          textOffset: 0,
+          sourceCharCount: raw.length,
+          hiddenReasons,
+          visibleToUser: visibility === "visible",
+          likelyInExtractedText: element.closest("noscript,template") === null
+        });
+      }
+      if (nodesVisited % 250 === 0) await pause();
+      if (charactersExtracted >= limits.chars) {
+        partialReasons.push({ code: "partial_size_limit", explanation: `Configured ${mode} character limit reached.`, phase: "extracting_text", workCompleted: charactersExtracted });
+        stopped = true;
+        break;
+      }
     }
   }
+
   return {
     scanId,
     pageUrl: location.href,
@@ -1013,59 +1351,12 @@ async function collectTextSegmentsForAgentSafe(scanId: string, mode: "quick" | "
       candidateHiddenElements,
       computedStyleInspections,
       charactersExtracted,
+      shadowRootsVisited,
+      iframeCount: document.querySelectorAll("iframe,frame").length,
       traversalDurationMs: Math.round(performance.now() - started),
       partialReasons
     }
   };
-}
-
-function cheapHiddenReasonsForAgentSafe(element: Element): Record<string, string> {
-  const reasons: Record<string, string> = {};
-  if ((element as HTMLElement).hidden) reasons.hidden = "hidden attribute";
-  if (element.getAttribute("aria-hidden") === "true") reasons.ariaHidden = "aria-hidden=true";
-  const style = element.getAttribute("style") ?? "";
-  if (/display\s*:\s*none/i.test(style)) reasons.display = "inline display:none";
-  if (/visibility\s*:\s*hidden/i.test(style)) reasons.visibility = "inline visibility:hidden";
-  if (/opacity\s*:\s*(0|0\.0+)/i.test(style)) reasons.opacity = "inline opacity near zero";
-  if (/left\s*:\s*-\d{3,}/i.test(style) || /top\s*:\s*-\d{3,}/i.test(style)) reasons.position = "inline off-screen position";
-  if (element.closest("template,noscript")) reasons.container = "template/noscript container";
-  return reasons;
-}
-
-function computedHiddenReasonsForAgentSafe(element: Element): Record<string, string> {
-  const reasons: Record<string, string> = {};
-  const style = getComputedStyle(element);
-  if (style.display === "none") reasons.display = style.display;
-  if (style.visibility === "hidden" || style.visibility === "collapse") reasons.visibility = style.visibility;
-  if (Number.parseFloat(style.opacity || "1") <= 0.03) reasons.opacity = style.opacity;
-  if (Number.parseFloat(style.fontSize || "16") <= 1) reasons.fontSize = style.fontSize;
-  const rect = element.getBoundingClientRect();
-  if ((rect.width === 0 || rect.height === 0) && (element.textContent?.trim().length ?? 0) > 0) reasons.box = `${rect.width}x${rect.height}`;
-  const left = Number.parseFloat(style.left || "0");
-  const top = Number.parseFloat(style.top || "0");
-  if ((style.position === "absolute" || style.position === "fixed") && (left < -999 || top < -999 || left > 20000 || top > 20000)) reasons.position = `${style.position}; left:${style.left}; top:${style.top}`;
-  const clip = [style.clip, style.clipPath].filter(Boolean).join(" ");
-  if (/rect\(\s*0(px)?\s*,?\s*0(px)?\s*,?\s*0(px)?\s*,?\s*0(px)?\s*\)|inset\(50%\)/i.test(clip)) reasons.clip = clip;
-  return reasons;
-}
-
-function selectorForAgentSafe(element: Element): string {
-  const cssEscape = globalThis.CSS?.escape ?? ((value: string) => value.replace(/[^a-zA-Z0-9_-]/g, "\\$&"));
-  if (element.id) return `#${cssEscape(element.id)}`;
-  const parts: string[] = [];
-  let current: Element | null = element;
-  while (current && current.nodeType === Node.ELEMENT_NODE && parts.length < 5) {
-    const tag = current.tagName.toLowerCase();
-    const parent: Element | null = current.parentElement;
-    if (!parent) {
-      parts.unshift(tag);
-      break;
-    }
-    const index = Array.from(parent.children).filter((child) => child.tagName === current!.tagName).indexOf(current) + 1;
-    parts.unshift(`${tag}:nth-of-type(${index})`);
-    current = parent;
-  }
-  return parts.join(" > ");
 }
 
 function snapshotPageForAgentSafe() {
@@ -1169,39 +1460,22 @@ function collectWebMcpForAgentSafe() {
   };
 }
 
-function highlightAgentSafeFinding(selector: string) {
-  injectAgentSafeStyles();
-  clearAgentSafeHighlights();
-  const element = queryAgentSafeElement(selector);
-  element?.classList.add("agentsafe-highlight");
-  element?.scrollIntoView({ behavior: "smooth", block: "center" });
-}
+/**
+ * Runs in the scanned page via chrome.scripting.executeScript, which serializes
+ * this function and nothing else: any reference to a module-scope helper would
+ * resolve against the page, where it does not exist, and fail silently. All three
+ * page actions live here so the shared resolution logic is written once.
+ *
+ * Injected into every frame, so it first checks it is the frame the finding came
+ * from. Selectors may cross shadow boundaries via " >>> ", which querySelector
+ * cannot follow, and shadow roots do not inherit document styles, so the
+ * highlight stylesheet is added to the containing root as well.
+ */
+function applyAgentSafePageAction(action: "highlight" | "reveal" | "clear", selector: string, frameUrl: string) {
+  if (frameUrl && location.href !== frameUrl) return false;
 
-function revealAgentSafeFinding(selector: string) {
-  injectAgentSafeStyles();
-  queryAgentSafeElement(selector)?.classList.add("agentsafe-reveal-hidden");
-}
-
-function clearAgentSafeHighlights() {
-  document.querySelectorAll(".agentsafe-highlight,.agentsafe-reveal-hidden").forEach((element) => {
-    element.classList.remove("agentsafe-highlight", "agentsafe-reveal-hidden");
-  });
-}
-
-function queryAgentSafeElement(selector: string): Element | null {
-  if (selector === "comment()") return null;
-  try {
-    return document.querySelector(selector);
-  } catch {
-    return null;
-  }
-}
-
-function injectAgentSafeStyles() {
-  if (document.getElementById("agentsafe-highlight-style")) return;
-  const style = document.createElement("style");
-  style.id = "agentsafe-highlight-style";
-  style.textContent = `
+  const STYLE_ID = "agentsafe-highlight-style";
+  const CSS = `
     .agentsafe-highlight {
       outline: 3px solid #d92d20 !important;
       box-shadow: 0 0 0 6px rgba(217,45,32,.22) !important;
@@ -1220,5 +1494,60 @@ function injectAgentSafeStyles() {
       font-size: 14px !important;
     }
   `;
-  document.documentElement.append(style);
+
+  const injectStyles = (root: Document | ShadowRoot) => {
+    const container = root instanceof Document ? root.documentElement : root;
+    if ((root instanceof Document ? root.getElementById(STYLE_ID) : root.querySelector(`#${STYLE_ID}`))) return;
+    const style = document.createElement("style");
+    style.id = STYLE_ID;
+    style.textContent = CSS;
+    container.append(style);
+  };
+
+  const clearWithin = (root: Document | ShadowRoot) => {
+    for (const element of Array.from(root.querySelectorAll("*"))) {
+      element.classList.remove("agentsafe-highlight", "agentsafe-reveal-hidden");
+      const shadow = (element as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot;
+      if (shadow) clearWithin(shadow);
+    }
+  };
+
+  const resolve = (path: string): Element | null => {
+    if (!path || path === "comment()") return null;
+    let root: Document | ShadowRoot | null = document;
+    let element: Element | null = null;
+    for (const part of path.split(" >>> ")) {
+      if (!root) return null;
+      try {
+        element = root.querySelector(part);
+      } catch {
+        return null;
+      }
+      if (!element) return null;
+      root = (element as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot ?? null;
+    }
+    return element;
+  };
+
+  if (action === "clear") {
+    clearWithin(document);
+    return true;
+  }
+
+  injectStyles(document);
+  if (action === "highlight") clearWithin(document);
+
+  const element = resolve(selector);
+  if (!element) return false;
+
+  const containingRoot = element.getRootNode();
+  if (containingRoot instanceof ShadowRoot) injectStyles(containingRoot);
+
+  if (action === "highlight") {
+    element.classList.add("agentsafe-highlight");
+    element.scrollIntoView({ behavior: "smooth", block: "center" });
+  } else {
+    element.classList.add("agentsafe-reveal-hidden");
+  }
+  return true;
 }

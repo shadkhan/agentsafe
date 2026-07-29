@@ -9,6 +9,11 @@ use serde_json::Value;
 
 const ZERO_WIDTH: [char; 4] = ['\u{200B}', '\u{200C}', '\u{200D}', '\u{FEFF}'];
 
+/// Unicode Tags block. These characters render as nothing, but they mirror ASCII
+/// one-for-one, so an entire instruction can be smuggled through text that looks
+/// empty to a reader while arriving intact in a model's context.
+const TAG_BLOCK: std::ops::RangeInclusive<char> = '\u{E0000}'..='\u{E007F}';
+
 pub fn scan_text_with_registry(
     scanner: &Scanner,
     request: TextScanRequest,
@@ -172,6 +177,8 @@ fn scan_unicode(
                 ZERO_WIDTH.contains(&ch)
             } else if rule.definition.id == "bidi-control" {
                 ('\u{202A}'..='\u{202E}').contains(&ch) || ('\u{2066}'..='\u{2069}').contains(&ch)
+            } else if rule.definition.id == "tag-block-unicode" {
+                TAG_BLOCK.contains(&ch)
             } else {
                 false
             };

@@ -2,7 +2,7 @@
 
 AgentSafe is a small TypeScript monorepo. The extension UI uses `chrome.scripting.executeScript` only after the user presses Scan, Highlight, or Reveal. The scan action snapshots the active page, preserves relevant computed CSS properties, and then runs scanner, sanitizer, and exporter code locally in the side panel context.
 
-No webpage body content is persisted. `chrome.storage.local` stores only settings. The production manifest has no host permissions and no static content scripts.
+Nothing is written to disk unless the user exports a report. `chrome.storage.local` stores only settings; the latest scan result per tab is cached in `chrome.storage.session`, which is memory-backed and cleared when Chrome closes. The production manifest has no host permissions and no static content scripts.
 
 ## Packages
 

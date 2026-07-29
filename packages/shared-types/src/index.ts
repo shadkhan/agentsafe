@@ -22,6 +22,7 @@ export type RuleSignal =
   | "low-contrast"
   | "zero-width-unicode"
   | "bidi-control"
+  | "tag-block-unicode"
   | "suspicious-comment"
   | "suspicious-meta"
   | "aria-hidden-instruction"
@@ -31,7 +32,9 @@ export type RuleSignal =
   | "reveal-system-prompt"
   | "delimiter-block"
   | "tool-use"
-  | "data-exfiltration";
+  | "data-exfiltration"
+  | "markdown-image-exfiltration"
+  | "url-parameter-exfiltration";
 
 export interface ScannerSettings {
   enabledCategories: FindingCategory[];
@@ -88,6 +91,9 @@ export interface ScanMetrics {
   computedStyleInspections: number;
   charactersExtracted: number;
   charactersScanned: number;
+  framesScanned?: number;
+  framesDetected?: number;
+  shadowRootsVisited?: number;
   chunksQueued: number;
   chunksCompleted: number;
   chunksSkipped: number;
@@ -154,6 +160,12 @@ export interface Finding {
   confidence: number;
   verdict?: "confirmed-risk" | "likely-risk" | "needs-review" | "low-confidence-signal";
   selector: string;
+  /**
+   * URL of the frame the finding was found in. Differs from the page URL when
+   * the match came from an embedded frame. A selector only resolves inside its
+   * own frame, and shadow-DOM selectors use ` >>> ` between host and inner parts.
+   */
+  frameUrl?: string;
   evidence: string;
   concern?: string;
   possibleImpact?: string;
