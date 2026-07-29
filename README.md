@@ -36,7 +36,7 @@ flowchart LR
 
 ## Architecture
 
-AgentSafe is a TypeScript and Rust monorepo. The Chrome extension is built with WXT and React, while the core scanner can use Rust/WASM-backed detection for performance-sensitive checks. The production manifest has no static host permissions and no content scripts that run automatically on every page.
+AgentSafe is a TypeScript and Rust monorepo. The Chrome extension is built with WXT and React. Detection runs in a Rust/WASM scanner inside a Worker; the TypeScript packages handle extraction, chunking, scoring, sanitizing, and export. The production manifest has no static host permissions and no content scripts that run automatically on every page.
 
 ```mermaid
 flowchart TB
@@ -47,7 +47,6 @@ flowchart TB
 
   subgraph Packages["TypeScript packages"]
     Adapter["@agentsafe/browser-scanner-adapter"]
-    Scanner["@agentsafe/scanner"]
     Risk["@agentsafe/risk-engine"]
     Sanitizer["@agentsafe/dom-sanitizer"]
     Exporter["@agentsafe/markdown-exporter"]
@@ -61,11 +60,11 @@ flowchart TB
   end
 
   SidePanel --> Adapter
-  Adapter --> Scanner
   Adapter --> WasmWrapper
-  Scanner --> Risk
-  Scanner --> Types
+  Adapter --> Risk
+  Adapter --> Types
   Risk --> Types
+  SidePanel --> Sanitizer
   Sanitizer --> Exporter
   WasmWrapper --> Wasm
   Wasm --> Core
@@ -127,8 +126,7 @@ The production build must include:
 | Path | Purpose |
 | --- | --- |
 | `apps/extension` | WXT React side panel and Manifest V3 extension entrypoints |
-| `packages/scanner` | DOM, text, CSS, metadata, Unicode, encoded-content, and instruction-pattern scanner |
-| `packages/browser-scanner-adapter` | Browser extraction contracts, worker coordinator, chunking, cancellation, and exception filtering |
+| `packages/browser-scanner-adapter` | Browser extraction contracts, worker coordinator, chunking, cancellation, finding mapping, and exception filtering |
 | `packages/scanner-wasm` | TypeScript wrapper around the Rust/WASM scanner package |
 | `packages/risk-engine` | Scoring, severity mapping, and summary aggregation |
 | `packages/dom-sanitizer` | Local DOM cleanup and suspicious-content neutralization |

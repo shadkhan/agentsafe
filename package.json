@@ -1,6 +1,6 @@
 {
   "name": "agentsafe",
-  "version": "0.1.0",
+  "version": "0.9.0",
   "private": true,
   "description": "AgentSafe - Prompt Injection Detector and Web Sanitizer",
   "license": "MIT",
@@ -14,9 +14,10 @@
     "dev": "pnpm --filter @agentsafe/extension dev",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "pnpm --filter @agentsafe/shared-types --filter @agentsafe/risk-engine --filter @agentsafe/scanner --filter @agentsafe/scanner-wasm --filter @agentsafe/browser-scanner-adapter --filter @agentsafe/webmcp-security --filter @agentsafe/dom-sanitizer --filter @agentsafe/markdown-exporter build && pnpm --filter @agentsafe/extension typecheck",
+    "typecheck": "pnpm --filter @agentsafe/shared-types --filter @agentsafe/risk-engine --filter @agentsafe/scanner-wasm --filter @agentsafe/browser-scanner-adapter --filter @agentsafe/webmcp-security --filter @agentsafe/dom-sanitizer --filter @agentsafe/markdown-exporter build && pnpm --filter @agentsafe/extension typecheck",
     "verify:clean": "powershell -ExecutionPolicy Bypass -File scripts/verify-clean-build.ps1",
-    "e2e": "playwright test"
+    "e2e": "playwright test --project=e2e",
+    "capture:screenshot": "playwright test --project=capture"
   },
   "workspaces": [
     "apps/*",

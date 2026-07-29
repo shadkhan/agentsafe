@@ -15,11 +15,13 @@ Official references checked:
 
 | Purpose | File |
 | --- | --- |
-| Upload package ZIP | `apps/extension/.output/agentsafeextension-0.1.0-chrome.zip` |
+| Packaged icons | `apps/extension/public/icon/16.png`, `32.png`, `48.png`, `128.png` |
+| Upload package ZIP | `apps/extension/.output/agentsafeextension-0.9.0-chrome.zip` |
 | Built extension folder | `apps/extension/.output/chrome-mv3` |
 | Packaged extension icon | `apps/extension/public/icon/128.png` |
 | Store icon copy | `docs/chrome-store/assets/agentsafe-icon-128.png` |
-| Store screenshot | `docs/chrome-store/assets/agentsafe-store-screenshot-1280x800.png` |
+| Store screenshot (captured from the running panel) | `docs/chrome-store/assets/agentsafe-store-screenshot-1280x800.png` |
+| Screenshot capture spec | `e2e/store-screenshot.spec.ts` |
 | Small promo tile | `docs/chrome-store/assets/agentsafe-small-promo-440x280.png` |
 | Asset generator | `scripts/prepare-chrome-store-assets.ps1` |
 
@@ -28,7 +30,7 @@ Official references checked:
 Upload this ZIP in the Chrome Developer Dashboard:
 
 ```text
-apps/extension/.output/agentsafeextension-0.1.0-chrome.zip
+apps/extension/.output/agentsafeextension-0.9.0-chrome.zip
 ```
 
 Do not upload the source repository. Do not ZIP the parent folder in a way that places `chrome-mv3/manifest.json` inside the archive. Chrome requires `manifest.json` at the ZIP root.
@@ -68,7 +70,9 @@ pnpm --filter @agentsafe/extension zip
 | Mature content | No |
 | Website / homepage URL | `https://github.com/shadkhan/agentsafe` |
 | Support URL | `https://github.com/shadkhan/agentsafe/issues` |
-| Privacy policy URL | `https://github.com/shadkhan/agentsafe/blob/main/PRIVACY.md` |
+| Privacy policy URL | `https://github.com/shadkhan/agentsafe/blob/main/docs/privacy/PRIVACY.md` |
+
+The privacy policy URL must resolve for a signed-out visitor. Chrome rejects a listing whose policy link 404s, which is what happens if the repository is still private. Confirm the repository is public before submitting, or host the policy elsewhere and use that URL instead.
 
 Category note: use `Productivity` for a user-facing browser safety tool. If you want to position it mainly for engineers and security reviewers, `Developer Tools` is also reasonable.
 
@@ -116,7 +120,7 @@ icon/128.png
 inside:
 
 ```text
-apps/extension/.output/agentsafeextension-0.1.0-chrome.zip
+apps/extension/.output/agentsafeextension-0.9.0-chrome.zip
 ```
 
 ## Privacy Practices Tab
@@ -152,10 +156,12 @@ No user data is collected, sold, transferred, or used for unrelated purposes.
 Reviewer-facing clarification:
 
 ```text
-AgentSafe reads the active page only after the user requests a scan. Page content is processed locally in the browser extension and is not sent to the developer, third parties, analytics services, telemetry systems, or external AI APIs. Complete webpage content is not persisted. Local settings are stored in chrome.storage.local.
+AgentSafe reads the active page only after the user requests a scan. Page content is processed locally in the browser extension and is not sent to the developer, third parties, analytics services, telemetry systems, or external AI APIs. Nothing is written to disk unless the user exports a report. Settings are stored in chrome.storage.local, and the most recent scan result for each open tab is cached in chrome.storage.session, which is memory-backed and cleared when Chrome closes.
 ```
 
 If the dashboard asks about data categories, select no collected data only if the form defines collection as transmitting or storing user data outside the user's device. If the form treats local processing as a disclosure category, disclose webpage content / website content and explain that it is processed locally only.
+
+Do not describe the extension as storing no page content. The per-tab `chrome.storage.session` cache holds the sanitized export for the current browsing session, and the answer above is worded to match that.
 
 ## Permission Justifications
 
@@ -164,10 +170,13 @@ If the dashboard asks about data categories, select no collected data only if th
 | `activeTab` | Allows AgentSafe to inspect the active page only after the user requests a scan or page action. |
 | `sidePanel` | Displays scan status, findings, explanations, settings, and export actions in Chrome's side panel. |
 | `storage` | Stores local user settings such as scan mode, sensitivity, enabled categories, allowlists, and scoped exceptions. |
-| `scripting` | Runs user-triggered page extraction, highlight, reveal, and cleanup scripts on the active tab. |
-| `downloads` | Saves user-requested Markdown and JSON reports to the user's device. |
+| `scripting` | Runs user-triggered page extraction, highlight, reveal, and cleanup scripts on the active tab and its frames. |
 | `tabs` | Reads active-tab URL/title for scan context, cached per-tab results, badge updates, and optional per-site permission prompts. |
 | Optional `http://*/*`, `https://*/*` host access | Requested per site only when needed for user-triggered scanning. AgentSafe does not use broad static host permissions. |
+
+AgentSafe does not request `downloads`. Reports are saved through an anchor element in the extension page.
+
+If a reviewer asks why `scripting` injects into all frames: prompt-injection content is routinely placed in an embedded frame precisely because a top-frame-only scanner will not see it. Chrome still withholds frames whose origin the user has not granted, and the extension reports how many frames it actually covered.
 
 ## Distribution Tab
 
@@ -185,13 +194,16 @@ Chrome notes that all visibility modes still go through review, so use Private o
 | Check | Status |
 | --- | --- |
 | `manifest.json` at ZIP root | Verified |
-| `icon/128.png` inside ZIP | Verified |
+| `icon/16.png`, `32.png`, `48.png`, `128.png` inside ZIP | Verified |
 | Store icon generated | Verified |
 | Screenshot generated | Verified |
 | Small promo tile generated | Verified |
-| Production ZIP generated | Verified |
-| Privacy policy path available in repo | Verify after pushing to GitHub |
-| CI passing on GitHub | Re-run after the Playwright browser install workflow fix |
+| Production ZIP generated | Regenerate after the version bump |
+| `pnpm verify:clean` passing | Verified |
+| Browser E2E passing against the packaged build | Verified |
+| Privacy policy URL resolves when signed out | Verify after making the repository public |
+| CI passing on GitHub | Verify after pushing |
+| Screenshot reflects the current side panel | Captured from the running extension by `pnpm capture:screenshot`; recapture after UI changes |
 
 ## Regenerate Assets
 
@@ -199,11 +211,18 @@ Run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/prepare-chrome-store-assets.ps1
+pnpm --filter @agentsafe/extension build
+pnpm capture:screenshot
 pnpm --filter @agentsafe/extension zip
 ```
+
+The icons and the promo tile are drawn by the PowerShell script. The 1280x800
+screenshot is not: `pnpm capture:screenshot` runs the extension in Chromium,
+scans a page, and photographs the real side panel. Recapture it whenever the
+panel UI changes, and note that it requires a current build.
 
 Then upload the regenerated ZIP from:
 
 ```text
-apps/extension/.output/agentsafeextension-0.1.0-chrome.zip
+apps/extension/.output/agentsafeextension-0.9.0-chrome.zip
 ```

@@ -2,7 +2,11 @@
 
 All notable changes to AgentSafe are recorded here. Newest first.
 
-## Unreleased
+## 0.9.0 - unreleased
+
+Release-candidate version for the first Chrome Web Store submission. `0.1.0` read
+as pre-alpha to anyone looking at the listing; `1.0.0` is held back until the
+store review has actually passed.
 
 ### Fixed
 
@@ -12,11 +16,21 @@ All notable changes to AgentSafe are recorded here. Newest first.
 - **Highlight, Reveal, and Clear silently did nothing on every real page.** `chrome.scripting.executeScript` serializes only the function it is handed, but these referenced module-scope helpers that do not exist in the page context, so injection threw and the rejection was swallowed by a floating promise. The injected functions are now self-contained, and page actions report failures to the user instead of failing silently. Caught by the new browser E2E.
 - Removed three dead module-scope copies of the extraction helpers, superseded by the inlined versions inside the injected function.
 
+### Removed
+
+- **`packages/scanner` is deleted.** The pure-TypeScript `scanDocument` was not used by the extension — the live path is the Worker plus Rust/WASM — and it had drifted far enough to be actively misleading, carrying none of the rules added in this release. A reader comparing the two rule sets would have got a false picture of what the scanner detects. Its 71 tests exercised code no user ever ran; the two tests that depended on it, in `dom-sanitizer` and `markdown-exporter`, now build findings directly, which is what they were really testing. Suite count drops from 117 to 47 for that reason, not from lost coverage of shipping code.
+
 ### Changed
 
+- **The store screenshot is now a photograph of the extension.** `pnpm capture:screenshot` runs the packaged build in Chromium, scans a page, and composites real side panel captures onto the 1280x800 canvas the store requires. The previous image was drawn by a PowerShell script and had already diverged from the shipping UI. It runs as a separate Playwright project so an ordinary `pnpm e2e` never rewrites a published asset.
+- **The progress meter clears when a scan settles.** It previously stayed on screen frozen at whatever percentage the final chunk reported — "95%, scanning visible content" on a finished scan — which reads as a stuck scan. Found while reviewing the first real screenshot capture.
+- **The `downloads` permission is gone.** Report exports save through an anchor element in the extension page, which an extension page can already do. The permission only added a line to the install prompt and a question at review. Exports now land in the browser's download location instead of opening a Save As dialog.
+- **Manifest declares 16, 32, 48, and 128px icons** instead of 128 alone, so Chrome no longer downscales one bitmap for the toolbar and extensions page. All sizes are drawn from the same artwork in the asset script; the "AI" badge appears only at 128, where its lettering is legible.
+- **`minimum_chrome_version` is now declared as 114**, the first version with the side panel API. Without it, older Chrome installs the extension and then fails at runtime.
 - **Low-specificity rules no longer fire on ordinary prose.** `suspicious-comment-or-meta` matches a bare keyword list (`ai`, `agent`, `tool`, `llm`) and was applied to visible body text, so any page discussing AI flagged itself; it is now limited to metadata and comments, which is what it was written for. `tool-use` and `delimiter-block` on visible text now require corroboration — either the text is hidden, or another rule matched the same element. The benign `article.html` fixture used to trip `tool-use`; it no longer does.
 - Privacy documentation now describes the `chrome.storage.session` per-tab scan cache. The previous text stated page content was never stored, but the cache holds the sanitized export, including extracted main content. It is memory-backed and cleared when Chrome closes. Corrected in `PRIVACY.md`, `docs/privacy/PRIVACY.md`, `README.md`, and `ARCHITECTURE.md`.
 - Rule registry version is now `agentsafe-rules-2026-07-29`.
+- Store submission doc now carries the concrete field values: the corrected data-use answer that matches the session cache, a note that the privacy policy URL must resolve for a signed-out visitor, and a reviewer answer for why `scripting` injects into all frames.
 
 ### Added
 
@@ -40,6 +54,5 @@ All notable changes to AgentSafe are recorded here. Newest first.
 ### Known issues
 
 - The engine reports regex-match offsets against whitespace-normalized text but Unicode-match offsets against raw text, while segment offsets are raw. Drift is small because extraction pre-collapses whitespace, but a finding can be attributed to a neighbouring element.
-- `packages/scanner` (the pure-TypeScript `scanDocument`) is not used by the extension; the live path is the Worker plus Rust/WASM. It survives only in the sanitizer and exporter tests and has diverged from the Rust rules — it has none of the rules added in this release.
 - Corroboration for low-specificity rules is evaluated within a chunk. A match whose only supporting evidence sits in a different chunk is not corroborated.
 - Closed shadow roots cannot be inspected, and cross-origin frames are only scanned when the user has granted that origin. The summary reports frame coverage so this is visible rather than silent.

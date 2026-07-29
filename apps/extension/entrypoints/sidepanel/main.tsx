@@ -205,7 +205,13 @@ function App() {
       }
     } finally {
       if (activeScan.current?.scanId === scanId) activeScan.current = null;
-      if (isVisibleTab(startedTabId)) setIsScanning(false);
+      if (isVisibleTab(startedTabId)) {
+        setIsScanning(false);
+        // Leaving the meter up after the scan settles reads as a stuck scan: it
+        // freezes at whatever percentage the last chunk reported. Completion
+        // detail belongs to the summary, which reports it accurately.
+        setProgress(null);
+      }
     }
   }
 
@@ -863,10 +869,20 @@ function Empty({ text }: { text: string }) {
   return <p className="empty">{text}</p>;
 }
 
+/**
+ * Saves through an anchor rather than chrome.downloads. The API added a permission
+ * to the install prompt for something an extension page can already do, and every
+ * permission the manifest drops is one less thing a user has to accept.
+ */
 function download(filename: string, content: string, type: string) {
   const blob = new Blob([content], { type });
   const url = URL.createObjectURL(blob);
-  chrome.downloads.download({ url, filename, saveAs: true }, () => URL.revokeObjectURL(url));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  // Revoking immediately can cancel a download that has not started reading yet.
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
 createRoot(document.getElementById("root")!).render(<App />);

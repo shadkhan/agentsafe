@@ -90,9 +90,6 @@ importers:
       '@agentsafe/risk-engine':
         specifier: workspace:*
         version: link:../../packages/risk-engine
-      '@agentsafe/scanner':
-        specifier: workspace:*
-        version: link:../../packages/scanner
       '@agentsafe/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types
@@ -173,15 +170,6 @@ importers:
 
   packages/risk-engine:
     dependencies:
-      '@agentsafe/shared-types':
-        specifier: workspace:*
-        version: link:../shared-types
-
-  packages/scanner:
-    dependencies:
-      '@agentsafe/risk-engine':
-        specifier: workspace:*
-        version: link:../risk-engine
       '@agentsafe/shared-types':
         specifier: workspace:*
         version: link:../shared-types

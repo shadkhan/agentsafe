@@ -225,6 +225,21 @@ test.describe("packaged extension scans real pages", () => {
     expect(sanitized).toContain("This visible paragraph should survive sanitization.");
     expect(sanitized.toLowerCase()).not.toContain("ignore previous instructions");
 
+    // Exports save through an anchor rather than chrome.downloads, so the
+    // manifest can drop that permission. This is the check that it still saves.
+    await clickPanelButton(panel, "Export");
+    const [markdownDownload] = await Promise.all([
+      panel.waitForEvent("download"),
+      clickPanelButton(panel, "Download Markdown")
+    ]);
+    expect(markdownDownload.suggestedFilename()).toBe("agentsafe-sanitized.md");
+
+    const [jsonDownload] = await Promise.all([
+      panel.waitForEvent("download"),
+      clickPanelButton(panel, "Download JSON report")
+    ]);
+    expect(jsonDownload.suggestedFilename()).toBe("agentsafe-report.json");
+
     await page.close();
     await panel.close();
   });

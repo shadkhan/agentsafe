@@ -1,6 +1,6 @@
 {
   "name": "@agentsafe/extension",
-  "version": "0.1.0",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -14,7 +14,6 @@
     "@agentsafe/dom-sanitizer": "workspace:*",
     "@agentsafe/markdown-exporter": "workspace:*",
     "@agentsafe/risk-engine": "workspace:*",
-    "@agentsafe/scanner": "workspace:*",
     "@agentsafe/shared-types": "workspace:*",
     "@agentsafe/webmcp-security": "workspace:*",
     "lucide-react": "^0.468.0",

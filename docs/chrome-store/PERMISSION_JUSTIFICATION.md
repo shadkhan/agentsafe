@@ -6,8 +6,9 @@ AgentSafe uses:
 - `sidePanel` to display scan findings.
 - `storage` to save local settings.
 - `scripting` for active-tab inspection and highlighting.
-- `downloads` for user-requested report downloads.
 - `tabs` to read active-tab URL/title for per-site optional permission prompts when needed.
+
+Report downloads use an anchor element in the extension page, so no `downloads` permission is requested.
 
 No host permissions are requested. No data is sent to external services. The scan Worker and Rust/WASM scanner are packaged with the extension.
 

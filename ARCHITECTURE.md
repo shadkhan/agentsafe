@@ -8,7 +8,8 @@ Nothing is written to disk unless the user exports a report. `chrome.storage.loc
 
 - `@agentsafe/shared-types`: `Finding`, `ScanResult`, `SanitizedExport`, and settings types.
 - `@agentsafe/risk-engine`: documented scoring algorithm and summary aggregation.
-- `@agentsafe/scanner`: DOM, CSS, Unicode, comment, meta, encoded-content, and instruction-pattern detection.
+- `@agentsafe/browser-scanner-adapter`: extraction contracts, chunking, Worker coordination, and mapping engine matches back onto page segments.
+- `@agentsafe/scanner-wasm`: TypeScript wrapper around the Rust scanner that performs the actual detection.
 - `@agentsafe/dom-sanitizer`: removes or neutralizes suspicious content while preserving visible page text.
 - `@agentsafe/markdown-exporter`: extracts main content with Mozilla Readability and converts sanitized HTML to Markdown.
 
